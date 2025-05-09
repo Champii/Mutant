@@ -3,7 +3,7 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::error::Error as DaemonError;
-use super::{TaskEntry, TaskMap, ActiveKeysMap, try_register_key, release_key};
+use super::{TaskEntry, TaskMap, ActiveKeysMap, try_register_key, release_key, is_public_only_mode, PUBLIC_ONLY_ERROR_MSG};
 use mutant_lib::storage::ScratchpadAddress;
 use mutant_lib::MutAnt;
 use mutant_protocol::{
@@ -22,6 +22,16 @@ pub(crate) async fn handle_put(
     active_keys: ActiveKeysMap,
     original_request_str: &str,
 ) -> Result<(), DaemonError> {
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(original_request_str.to_string()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
+
     let task_id = Uuid::new_v4();
     let user_key = req.user_key.clone();
     let source_path = req.source_path.clone(); // Keep path for logging
@@ -428,6 +438,16 @@ pub(crate) async fn handle_rm(
     active_keys: ActiveKeysMap,
     original_request_str: &str,
 ) -> Result<(), DaemonError> {
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(original_request_str.to_string()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
+
     let task_id = Uuid::new_v4();
     let user_key = req.user_key.clone();
     log::info!("Starting RM task: user_key={}", user_key);

@@ -2,10 +2,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::Error as DaemonError;
-use super::{TaskMap, TaskEntry};
+use super::{TaskMap, TaskEntry, is_public_only_mode, PUBLIC_ONLY_ERROR_MSG};
 use mutant_lib::MutAnt;
 use mutant_protocol::{
-    HealthCheckCallback, HealthCheckEvent, HealthCheckRequest, PurgeCallback, PurgeEvent,
+    ErrorResponse, HealthCheckCallback, HealthCheckEvent, HealthCheckRequest, PurgeCallback, PurgeEvent,
     PurgeRequest, Response, SyncCallback, SyncEvent, SyncRequest, Task, TaskCreatedResponse,
     TaskProgress, TaskResult, TaskResultResponse, TaskResultType, TaskStatus, TaskType,
     TaskUpdateResponse,
@@ -19,6 +19,16 @@ pub(crate) async fn handle_sync(
     mutant: Arc<MutAnt>,
     tasks: TaskMap,
 ) -> Result<(), DaemonError> {
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(serde_json::to_string(&SyncRequest { push_force: req.push_force }).unwrap_or_default()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
+
     let task_id = Uuid::new_v4();
 
     let task = Task {
@@ -159,6 +169,16 @@ pub(crate) async fn handle_purge(
     mutant: Arc<MutAnt>,
     tasks: TaskMap,
 ) -> Result<(), DaemonError> {
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(serde_json::to_string(&PurgeRequest { aggressive: req.aggressive }).unwrap_or_default()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
+
     let task_id = Uuid::new_v4();
 
     let task = Task {
@@ -300,6 +320,19 @@ pub(crate) async fn handle_health_check(
     mutant: Arc<MutAnt>,
     tasks: TaskMap,
 ) -> Result<(), DaemonError> {
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(serde_json::to_string(&HealthCheckRequest {
+                    key_name: req.key_name.clone(),
+                    recycle: req.recycle
+                }).unwrap_or_default()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
+
     let task_id = Uuid::new_v4();
 
     let task = Task {

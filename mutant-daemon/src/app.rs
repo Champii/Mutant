@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use xdg::BaseDirectories;
 
 use mutant_lib::{config::NetworkChoice, MutAnt};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, OnceCell};
 use warp::Filter;
 
 use crate::error::Error;
@@ -12,6 +12,46 @@ use crate::wallet;
 
 use std::path::PathBuf;
 use tokio::signal;
+
+// Thread-safe singleton to track public-only mode
+pub static PUBLIC_ONLY_MODE: OnceCell<bool> = OnceCell::const_new();
+
+/// Helper function to initialize MutAnt based on network choice and private key
+async fn init_mutant(network_choice: NetworkChoice, private_key: Option<String>) -> Result<(MutAnt, bool), Error> {
+    let is_public_only = private_key.is_none();
+
+    let mutant = match (network_choice, private_key) {
+        // Full access with private key
+        (NetworkChoice::Devnet, Some(_)) => {
+            log::info!("Running in local mode");
+            MutAnt::init_local().await
+        }
+        (NetworkChoice::Alphanet, Some(key)) => {
+            log::info!("Running in alphanet mode");
+            MutAnt::init_alphanet(&key).await
+        }
+        (NetworkChoice::Mainnet, Some(key)) => {
+            log::info!("Running in mainnet mode");
+            MutAnt::init(&key).await
+        }
+
+        // Public-only mode (no private key)
+        (NetworkChoice::Devnet, None) => {
+            log::info!("Running in local public-only mode");
+            MutAnt::init_public_local().await
+        }
+        (NetworkChoice::Alphanet, None) => {
+            log::info!("Running in alphanet public-only mode");
+            MutAnt::init_public_alphanet().await
+        }
+        (NetworkChoice::Mainnet, None) => {
+            log::info!("Running in mainnet public-only mode");
+            MutAnt::init_public().await
+        }
+    }.map_err(Error::MutAnt)?;
+
+    Ok((mutant, is_public_only))
+}
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct NetworkConfig {
@@ -129,50 +169,49 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
 
     let mut config = Config::load()?;
 
-    let private_key_for_mutant: String;
-
-    match config.get_private_key(network_choice)? {
+    // Try to get a private key from config
+    let private_key = match config.get_private_key(network_choice)? {
         Some((key_from_file, pk_hex)) => {
             log::info!(
                 "Loaded private key from file for network {:?}: {}",
                 network_choice,
                 pk_hex
             );
-            private_key_for_mutant = key_from_file;
+            Some(key_from_file)
         }
         None => {
-            log::info!("No private key found in config or file, attempting to scan wallets for network {:?}", network_choice);
-            let (selected_private_key, pk_hex) = wallet::scan_and_select_wallet().await?;
-
-            config.set_public_key(network_choice, pk_hex.clone());
-            config.save()?;
-            log::info!(
-                "Saved newly selected public key {} to config for network {:?}",
-                pk_hex,
-                network_choice
-            );
-            private_key_for_mutant = selected_private_key;
-        }
-    }
-
-    let mutant = Arc::new(
-        match network_choice {
-            NetworkChoice::Devnet => {
-                log::info!("Running in local mode");
-                MutAnt::init_local().await
-            }
-            NetworkChoice::Alphanet => {
-                log::info!("Running in alphanet mode");
-                MutAnt::init_alphanet(&private_key_for_mutant).await
-            }
-            NetworkChoice::Mainnet => {
-                log::info!("Running in mainnet mode");
-                MutAnt::init(&private_key_for_mutant).await
+            // Try to scan for wallets
+            match wallet::scan_and_select_wallet().await {
+                Ok((selected_private_key, pk_hex)) => {
+                    // Save the selected wallet for future use
+                    config.set_public_key(network_choice, pk_hex.clone());
+                    config.save()?;
+                    log::info!(
+                        "Saved newly selected public key {} to config for network {:?}",
+                        pk_hex,
+                        network_choice
+                    );
+                    Some(selected_private_key)
+                }
+                Err(e) => {
+                    // No wallet found, initialize in public-only mode
+                    log::warn!("No wallet found: {}. Initializing in public-only mode.", e);
+                    log::info!("Only public downloads (mutant get -p) will be available.");
+                    None
+                }
             }
         }
-        .map_err(Error::MutAnt)?,
-    );
-    log::info!("MutAnt initialized successfully.");
+    };
+
+    // Initialize MutAnt with the appropriate mode
+    let (mutant, is_public_only) = init_mutant(network_choice, private_key).await?;
+    let mutant = Arc::new(mutant);
+
+    // Set the public-only mode flag
+    PUBLIC_ONLY_MODE.set(is_public_only).expect("PUBLIC_ONLY_MODE should only be set once");
+
+    log::info!("MutAnt initialized successfully{}",
+        if is_public_only { " in public-only mode" } else { "" });
 
     // Initialize Task Management
     let tasks: TaskMap = Arc::new(RwLock::new(HashMap::new()));

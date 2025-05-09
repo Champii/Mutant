@@ -2,10 +2,11 @@ use std::sync::Arc;
 use tokio::fs;
 
 use crate::error::Error as DaemonError;
+use super::{is_public_only_mode, PUBLIC_ONLY_ERROR_MSG};
 use mutant_lib::storage::PadInfo;
 use mutant_lib::MutAnt;
 use mutant_protocol::{
-    ExportRequest, ExportResponse, ExportResult, ImportRequest, ImportResponse, ImportResult,
+    ErrorResponse, ExportRequest, ExportResponse, ExportResult, ImportRequest, ImportResponse, ImportResult,
     Response,
 };
 
@@ -17,6 +18,16 @@ pub(crate) async fn handle_import(
     mutant: Arc<MutAnt>,
 ) -> Result<(), DaemonError> {
     log::debug!("Handling Import request");
+
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(serde_json::to_string(&req).unwrap_or_default()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
 
     let file_path = req.file_path.clone();
     let pads_hex = fs::read(&file_path)
@@ -49,6 +60,16 @@ pub(crate) async fn handle_export(
     mutant: Arc<MutAnt>,
 ) -> Result<(), DaemonError> {
     log::debug!("Handling Export request");
+
+    // Check if we're in public-only mode
+    if is_public_only_mode() {
+        return update_tx
+            .send(Response::Error(ErrorResponse {
+                error: PUBLIC_ONLY_ERROR_MSG.to_string(),
+                original_request: Some(serde_json::to_string(&req).unwrap_or_default()),
+            }))
+            .map_err(|e| DaemonError::Internal(format!("Update channel send error: {}", e)));
+    }
 
     let destination_path = req.destination_path.clone();
 
