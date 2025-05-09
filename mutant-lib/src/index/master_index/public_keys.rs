@@ -47,14 +47,20 @@ impl MasterIndex {
     }
 
     pub fn populate_index_pad(&mut self, key_name: &str) -> Result<(PadInfo, Vec<u8>), Error> {
-        match self.index.get_mut(key_name) {
+        let res = match self.index.get_mut(key_name) {
             Some(IndexEntry::PublicUpload(index_pad, pads)) => {
                 let index_data = serde_cbor::to_vec(&pads).unwrap();
+
                 index_pad.size = index_data.len();
                 index_pad.checksum = PadInfo::checksum(&index_data);
+
                 Ok((index_pad.clone(), index_data))
             }
             _ => Err(IndexError::KeyNotFound(key_name.to_string()).into()),
-        }
+        };
+
+        self.save(self.network_choice)?;
+
+        res
     }
 }

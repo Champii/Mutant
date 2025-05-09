@@ -1,4 +1,3 @@
-use crate::index::PadInfo;
 use crate::network::Network;
 use std::{ops::Range, sync::Arc};
 use tokio::sync::RwLock;
@@ -13,10 +12,7 @@ pub struct Context {
     pub data: Arc<Vec<u8>>,
     pub chunk_ranges: Arc<Vec<Range<usize>>>,
     pub public: bool,
-    /// Optional preserved index pad for public key updates
-    pub preserved_index_pad: Option<PadInfo>,
-    /// Flag to indicate if this context is for an index pad
-    pub is_index_pad: bool,
+    pub encoding: u64,
 }
 
 /// Context for put tasks

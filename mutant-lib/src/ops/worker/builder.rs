@@ -41,7 +41,7 @@ where
         ));
     }
 
-    let num_workers = *NB_CLIENTS;
+    let num_workers = NB_CLIENTS.min(config.total_items_hint);
     let batch_size = *BATCH_SIZE;
 
     // --- Channel Creation ---

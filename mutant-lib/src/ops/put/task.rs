@@ -7,14 +7,12 @@ use crate::ops::MAX_CONFIRMATION_DURATION;
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use mutant_protocol::PutEvent;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::Instant;
 
+use super::super::PAD_RECYCLING_RETRIES;
 use super::context::PutTaskContext;
-use super::super::{
-    DATA_ENCODING_PRIVATE_DATA, DATA_ENCODING_PUBLIC_DATA, DATA_ENCODING_PUBLIC_INDEX,
-    PAD_RECYCLING_RETRIES,
-};
 
 #[derive(Clone)]
 pub struct PutTaskProcessor {
@@ -28,9 +26,7 @@ impl PutTaskProcessor {
 }
 
 #[async_trait]
-impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error>
-    for PutTaskProcessor
-{
+impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error> for PutTaskProcessor {
     type ItemId = usize;
 
     async fn process(
@@ -54,43 +50,6 @@ impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error>
         };
 
         if should_put {
-            // Use the is_index_pad flag from the context to determine if this is an index pad
-            let is_index_pad = is_public && self.context.base_context.is_index_pad;
-
-            // Check if we have a preserved index pad that we should use instead
-            if is_index_pad && self.context.base_context.preserved_index_pad.is_some() {
-                // If we have a preserved index pad, we should use its address instead
-                if let Some(preserved_pad) = &self.context.base_context.preserved_index_pad {
-                    info!(
-                        "Worker {} using preserved index pad address {} instead of {}",
-                        worker_id, preserved_pad.address, pad_state.address
-                    );
-                    pad_state.address = preserved_pad.address;
-                }
-            }
-
-            let data_encoding = if is_public {
-                if is_index_pad {
-                    debug!(
-                        "Using PUBLIC_INDEX encoding for index pad {} (chunk_index={})",
-                        pad_state.address, pad_state.chunk_index
-                    );
-                    DATA_ENCODING_PUBLIC_INDEX
-                } else {
-                    debug!(
-                        "Using PUBLIC_DATA encoding for data pad {} (chunk_index={})",
-                        pad_state.address, pad_state.chunk_index
-                    );
-                    DATA_ENCODING_PUBLIC_DATA
-                }
-            } else {
-                debug!(
-                    "Using PRIVATE_DATA encoding for pad {} (chunk_index={})",
-                    pad_state.address, pad_state.chunk_index
-                );
-                DATA_ENCODING_PRIVATE_DATA
-            };
-
             let chunk_index = pad_state.chunk_index;
             let range = self
                 .context
@@ -128,7 +87,13 @@ impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error>
                     .context
                     .base_context
                     .network
-                    .put(client, &pad_state, chunk_data, data_encoding, is_public)
+                    .put(
+                        client,
+                        &pad_state,
+                        chunk_data,
+                        self.context.base_context.encoding,
+                        is_public,
+                    )
                     .await;
 
                 match put_result {

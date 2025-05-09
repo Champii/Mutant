@@ -1,4 +1,5 @@
 use super::progress::StyledProgressBar;
+use colored::Colorize;
 use indicatif::MultiProgress;
 use log::{error, info, warn};
 use mutant_client::ProgressReceiver;
@@ -13,6 +14,8 @@ struct PutCallbackContext {
     confirm_pb_opt: Arc<Mutex<Option<StyledProgressBar>>>,
     multi_progress: MultiProgress,
     total_chunks: Arc<Mutex<usize>>,
+    first_complete_seen: Arc<Mutex<bool>>,
+    start_time: Arc<Mutex<std::time::Instant>>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -21,6 +24,8 @@ pub fn create_put_progress(mut progress_rx: ProgressReceiver, multi_progress: Mu
     let upload_pb_opt = Arc::new(Mutex::new(None::<StyledProgressBar>));
     let confirm_pb_opt = Arc::new(Mutex::new(None::<StyledProgressBar>));
     let total_chunks_arc = Arc::new(Mutex::new(0usize));
+    let first_complete_seen = Arc::new(Mutex::new(false));
+    let start_time = Arc::new(Mutex::new(std::time::Instant::now()));
 
     let context = PutCallbackContext {
         res_pb_opt: res_pb_opt.clone(),
@@ -28,6 +33,8 @@ pub fn create_put_progress(mut progress_rx: ProgressReceiver, multi_progress: Mu
         confirm_pb_opt: confirm_pb_opt.clone(),
         multi_progress: multi_progress.clone(),
         total_chunks: total_chunks_arc.clone(),
+        first_complete_seen: first_complete_seen.clone(),
+        start_time: start_time.clone(),
     };
 
     let ctx_clone = context.clone();
@@ -138,7 +145,85 @@ pub fn create_put_progress(mut progress_rx: ProgressReceiver, multi_progress: Mu
                     Ok::<bool, Box<dyn std::error::Error + Send + Sync>>(true)
                 }
                 PutEvent::Complete => {
-                    info!("Complete event received, clearing progress bars");
+                    // Check if this is the first or second Complete event
+                    let mut first_complete_seen_guard = ctx.first_complete_seen.lock().await;
+                    let is_first_complete = !*first_complete_seen_guard;
+
+                    if is_first_complete {
+                        info!("First Complete event received for data pads");
+                        // Mark that we've seen the first Complete event
+                        *first_complete_seen_guard = true;
+                        drop(first_complete_seen_guard);
+
+                        // Clear all progress bars before showing the message
+                        // First, finish the reservation bar if it exists
+                        let mut res_pb_guard = ctx.res_pb_opt.lock().await;
+                        if let Some(pb) = res_pb_guard.take() {
+                            info!("Clearing reservation bar");
+                            if !pb.is_finished() {
+                                // If the bar isn't at 100%, set it to 100% before clearing
+                                if let Some(len) = pb.length() {
+                                    pb.set_position(len);
+                                }
+                                pb.set_message("Pads acquired.".to_string());
+                            }
+                            pb.finish_and_clear();
+                        }
+                        drop(res_pb_guard);
+
+                        // Next, finish the upload bar
+                        let mut upload_pb_guard = ctx.upload_pb_opt.lock().await;
+                        if let Some(pb) = upload_pb_guard.take() {
+                            info!("Clearing upload bar");
+                            if !pb.is_finished() {
+                                // If the bar isn't at 100%, set it to 100% before clearing
+                                if let Some(len) = pb.length() {
+                                    pb.set_position(len);
+                                }
+                                pb.set_message("Upload complete.".to_string());
+                            }
+                            pb.finish_and_clear();
+                        }
+                        drop(upload_pb_guard);
+
+                        // Finally, finish the confirmation bar
+                        let mut confirm_pb_guard = ctx.confirm_pb_opt.lock().await;
+                        if let Some(pb) = confirm_pb_guard.take() {
+                            info!("Clearing confirmation bar");
+                            if !pb.is_finished() {
+                                // If the bar isn't at 100%, set it to 100% before clearing
+                                if let Some(len) = pb.length() {
+                                    pb.set_position(len);
+                                }
+                                pb.set_message("Confirmation complete.".to_string());
+                            }
+                            pb.finish_and_clear();
+                        }
+                        drop(confirm_pb_guard);
+
+                        // Ensure all progress bars are cleared
+                        crate::utils::ensure_progress_cleared(&ctx.multi_progress);
+
+                        // Calculate elapsed time
+                        let start_time = *ctx.start_time.lock().await;
+                        let elapsed = start_time.elapsed();
+
+                        // Format the elapsed time
+                        let time_str = crate::utils::format_elapsed_time(elapsed);
+
+                        // Display message about data pads being uploaded
+                        let total_chunks = *ctx.total_chunks.lock().await;
+                        println!("{} {} data pads have been uploaded (took {})",
+                            "•".bright_green(),
+                            total_chunks,
+                            time_str);
+
+                        return Ok::<bool, Box<dyn std::error::Error + Send + Sync>>(true);
+                    }
+
+                    // This is the second Complete event (or the only one for private keys)
+                    info!("Final Complete event received, clearing progress bars");
+                    drop(first_complete_seen_guard);
 
                     // Make sure all progress bars are finished and cleared
                     // First, finish the reservation bar if it exists
