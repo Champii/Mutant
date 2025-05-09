@@ -39,7 +39,7 @@ pub enum Commands {
     Rm { key: String },
     #[command(about = "List stored keys")]
     Ls {
-        #[arg(short = 'h', long, help = "Show fetch history")]
+        #[arg(long, help = "Show fetch history")]
         history: bool,
     },
     #[command(about = "Show storage statistics")]
