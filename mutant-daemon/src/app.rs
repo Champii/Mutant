@@ -18,12 +18,13 @@ pub static PUBLIC_ONLY_MODE: OnceCell<bool> = OnceCell::const_new();
 
 /// Helper function to initialize MutAnt based on network choice and private key
 async fn init_mutant(network_choice: NetworkChoice, private_key: Option<String>) -> Result<(MutAnt, bool), Error> {
-    let is_public_only = private_key.is_none();
+    let mut is_public_only = private_key.is_none();
 
     let mutant = match (network_choice, private_key) {
         // Full access with private key
-        (NetworkChoice::Devnet, Some(_)) => {
+        (NetworkChoice::Devnet, _) => {
             log::info!("Running in local mode");
+            is_public_only = false;
             MutAnt::init_local().await
         }
         (NetworkChoice::Alphanet, Some(key)) => {
@@ -36,10 +37,6 @@ async fn init_mutant(network_choice: NetworkChoice, private_key: Option<String>)
         }
 
         // Public-only mode (no private key)
-        (NetworkChoice::Devnet, None) => {
-            log::info!("Running in local public-only mode");
-            MutAnt::init_public_local().await
-        }
         (NetworkChoice::Alphanet, None) => {
             log::info!("Running in alphanet public-only mode");
             MutAnt::init_public_alphanet().await
