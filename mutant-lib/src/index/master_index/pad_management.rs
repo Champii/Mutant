@@ -5,7 +5,7 @@ use crate::storage::ScratchpadAddress;
 use mutant_protocol::StorageMode;
 use std::ops::Range;
 
-use super::MasterIndex;
+use super::{IndexEntry, MasterIndex};
 
 impl MasterIndex {
     pub fn chunk_data(&self, data_bytes: &[u8], mode: StorageMode) -> Vec<Range<usize>> {
@@ -99,6 +99,36 @@ impl MasterIndex {
         });
 
         Ok(available_pads)
+    }
+
+
+    /// Update a key with a new set of pads
+    pub fn update_key_with_pads(
+        &mut self,
+        key_name: &str,
+        pads: Vec<PadInfo>,
+        index_pad: Option<PadInfo>,
+    ) -> Result<(), Error> {
+        if !self.index.contains_key(key_name) {
+            return Err(Error::Index(IndexError::KeyNotFound(key_name.to_string())));
+        }
+
+        // Update the key with the new pads
+        if let Some(index_pad) = index_pad {
+            // For public keys, update with the index pad
+            self.index.insert(
+                key_name.to_string(),
+                IndexEntry::PublicUpload(index_pad, pads),
+            );
+        } else {
+            // For private keys, just update with the new pads
+            self.index.insert(key_name.to_string(), IndexEntry::PrivateKey(pads));
+        }
+
+        // Save the updated index
+        self.save(self.network_choice)?;
+
+        Ok(())
     }
 
     pub async fn recycle_errored_pad(

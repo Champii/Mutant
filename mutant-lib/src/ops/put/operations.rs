@@ -1,9 +1,10 @@
 use crate::error::Error;
-use crate::index::PadStatus;
+use crate::index::{PadInfo, PadStatus};
 use crate::internal_events::invoke_put_callback;
 use crate::network::Network;
+use crate::ops::{DATA_ENCODING_PRIVATE_DATA, DATA_ENCODING_PUBLIC_DATA, DATA_ENCODING_PUBLIC_INDEX};
 use autonomi::ScratchpadAddress;
-use log::{info, warn};
+use log::info;
 use mutant_protocol::{PutCallback, PutEvent, StorageMode};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -11,16 +12,19 @@ use tokio::sync::RwLock;
 use super::context::Context;
 use super::pipeline::write_pipeline;
 
-/// Update a key with new content, preserving the public index pad if applicable.
+/// Efficiently update a key with new content by reusing pads with matching checksums.
 ///
-/// For public keys, this function ensures that the public index pad is preserved during updates.
-/// This is critical because the public index pad must remain the same to maintain accessibility
-/// of the key through its public address. The function:
-/// 1. Extracts and preserves the index pad from the existing public key
-/// 2. Removes the key (which moves all pads to free_pads or pending_verification_pads)
-/// 3. Creates a new key with the updated content
-/// 4. Replaces the newly created index pad with the preserved one
-/// 5. Updates the index pad data to reflect the new content
+/// This function:
+/// 1. Compares checksums between existing pads and new data chunks
+/// 2. Reuses pads with matching checksums (keeps them as is)
+/// 3. Marks pads with different checksums as needing update (sets to Free status)
+/// 4. Handles cases where the new data is longer or shorter than the existing data
+/// 5. Preserves the public index pad for public keys
+///
+/// This approach is more efficient than the original update method because it:
+/// - Avoids unnecessary network operations for unchanged data chunks
+/// - Preserves pad addresses when possible, reducing network churn
+/// - Only uploads data that has actually changed
 pub async fn update(
     index: Arc<RwLock<crate::index::master_index::MasterIndex>>,
     network: Arc<Network>,
@@ -31,62 +35,155 @@ pub async fn update(
     no_verify: bool,
     put_callback: Option<PutCallback>,
 ) -> Result<ScratchpadAddress, Error> {
-    info!("Update for {}", key_name);
+    info!("Efficient update for {}", key_name);
+
+    // Get existing pads for the key
+    let existing_pads = index.read().await.get_pads(key_name);
+    if existing_pads.is_empty() {
+        return Err(Error::Internal(format!("Key '{}' not found", key_name)));
+    }
+
+    // Calculate chunk ranges for the new content
+    let chunk_ranges = index.read().await.chunk_data(&content, mode.clone());
 
     // Special handling for public keys to preserve the index pad
-    let mut preserved_index_pad = if public && index.read().await.is_public(key_name) {
+    let preserved_index_pad = if public && index.read().await.is_public(key_name) {
         info!("Preserving public index pad for key {}", key_name);
         index.read().await.extract_public_index_pad(key_name)
     } else {
         None
     };
 
-    // Remove the key (this will move all pads to free_pads or pending_verification_pads)
-    index.write().await.remove_key(key_name).unwrap();
+    // Compare the number of pads needed for the new content vs. existing pads
+    let existing_data_pads_count = existing_pads.len();
 
-    // Create a new key with the updated content
-    let (pads, chunk_ranges) = index
-        .write()
-        .await
-        .create_key(key_name, &content, mode, public)?;
+    let new_data_pads_count = chunk_ranges.len();
 
-    info!("Created key {} with {} pads", key_name, pads.len());
+    info!(
+        "Update for key '{}': existing pads: {}, new chunks: {}",
+        key_name, existing_data_pads_count, new_data_pads_count
+    );
 
-    let address = pads[0].address;
+    // Create a vector to hold the updated pads
+    let mut updated_pads = Vec::with_capacity(new_data_pads_count);
 
-    let context = Context {
-        index: index.clone(),
-        network: network.clone(),
-        name: Arc::new(key_name.to_string()),
-        chunk_ranges: Arc::new(chunk_ranges),
-        data: content.clone(),
-        public,
-        preserved_index_pad: None,
-        is_index_pad: false,
-    };
+    // Process existing pads up to the minimum of existing and new counts
+    let min_count = std::cmp::min(existing_data_pads_count, new_data_pads_count);
 
-    // Write the data pads
-    write_pipeline(context, pads.clone(), no_verify, put_callback.clone()).await?;
+    for i in 0..min_count {
+        let pad = &existing_pads[i];
+        let chunk_range = &chunk_ranges[i];
+        let chunk_data = &content[chunk_range.clone()];
+        let chunk_checksum = PadInfo::checksum(chunk_data);
 
-    // For public keys, we need to write the index pad
+        // If checksums match, keep the pad as is
+        if pad.checksum == chunk_checksum {
+            info!("Pad {} (chunk {}) has matching checksum, keeping as is", pad.address, i);
+            updated_pads.push(pad.clone());
+        } else {
+            // If checksums don't match, mark the pad for update
+            info!("Pad {} (chunk {}) has different checksum, marking for update", pad.address, i);
+            let mut updated_pad = pad.clone();
+            updated_pad.status = PadStatus::Free;
+            updated_pad.checksum = chunk_checksum;
+            updated_pad.size = chunk_data.len();
+            updated_pad.last_known_counter += 1;
+            updated_pads.push(updated_pad);
+        }
+    }
+
+    // If we need more pads than we have, acquire new ones
+    if new_data_pads_count > existing_data_pads_count {
+        info!(
+            "Need {} additional pads for key '{}'",
+            new_data_pads_count - existing_data_pads_count,
+            key_name
+        );
+
+        // Acquire additional pads for the remaining chunks
+        let additional_chunks = chunk_ranges[existing_data_pads_count..].to_vec();
+        let additional_pads = index
+            .write()
+            .await
+            .aquire_pads(&content, &additional_chunks)?;
+
+        updated_pads.extend(additional_pads);
+    } else if new_data_pads_count < existing_data_pads_count {
+        // If we have more pads than we need, free the excess ones
+        info!(
+            "Freeing {} excess pads for key '{}'",
+            existing_data_pads_count - new_data_pads_count,
+            key_name
+        );
+
+        // Move excess pads to the free list
+        let excess_pads = existing_pads[new_data_pads_count..].to_vec();
+
+        index.write().await.import_raw_pads_private_key(excess_pads)?;
+    }
+
+    // Update the key in the master index
+    if public {
+        // For public keys, update with the preserved index pad
+        if let Some(mut index_pad) = preserved_index_pad {
+            index_pad.status = PadStatus::Free;
+            index_pad.last_known_counter += 1;
+
+            index.write().await.update_key_with_pads(key_name, updated_pads.clone(), Some(index_pad))?;
+        } else {
+            // This shouldn't happen for existing public keys, but handle it just in case
+            index.write().await.update_key_with_pads(key_name, updated_pads.clone(), None)?;
+        }
+    } else {
+        // For private keys, just update with the new pads
+        index.write().await.update_key_with_pads(key_name, updated_pads.clone(), None)?;
+    }
+
+    // Get the address from the first pad
+    let address = updated_pads[0].address;
+
+    // Filter pads that need to be written (status is Free or Generated)
+    let pads_to_write: Vec<PadInfo> = updated_pads
+        .iter()
+        .filter(|p| p.status == PadStatus::Free || p.status == PadStatus::Generated)
+        .cloned()
+        .collect();
+
+    if !pads_to_write.is_empty() {
+        info!(
+            "Writing {} pads for key '{}' (out of {} total)",
+            pads_to_write.len(),
+            key_name,
+            updated_pads.len()
+        );
+
+        let encoding = if public {
+            DATA_ENCODING_PUBLIC_DATA
+        } else {
+            DATA_ENCODING_PRIVATE_DATA
+        };
+
+        let context = Context {
+            index: index.clone(),
+            network: network.clone(),
+            name: Arc::new(key_name.to_string()),
+            chunk_ranges: Arc::new(chunk_ranges),
+            data: content.clone(),
+            public,
+            encoding,
+        };
+
+        // Write only the pads that need updating
+        write_pipeline(context, pads_to_write, no_verify, put_callback.clone()).await?;
+    } else {
+        info!("No pads need to be written for key '{}'", key_name);
+    }
+
+    // For public keys, update and write the index pad
     if public {
         let (index_pad, index_data) = index.write().await.populate_index_pad(key_name)?;
         let index_data_bytes: Arc<Vec<u8>> = Arc::new(index_data);
         let index_chunk_ranges = Arc::new(vec![0..index_data_bytes.len()]);
-
-        preserved_index_pad = preserved_index_pad.map(|mut old_pad| {
-            old_pad.checksum = index_pad.checksum;
-            old_pad.size = index_pad.size;
-            old_pad.status = PadStatus::Free;
-            old_pad.last_known_counter += 1;
-
-            old_pad
-        });
-
-        //call update_public_key_with_preserved_index_pad
-        if let Some(preserved_index_pad) = &preserved_index_pad {
-            index.write().await.update_public_key_with_preserved_index_pad(key_name, preserved_index_pad.clone())?;
-        }
 
         let index_pad_context = Context {
             index: index.clone(),
@@ -95,21 +192,20 @@ pub async fn update(
             chunk_ranges: index_chunk_ranges,
             data: index_data_bytes,
             public,
-            preserved_index_pad: preserved_index_pad.clone(),
-            is_index_pad: true, // This is an index pad
+            encoding: DATA_ENCODING_PUBLIC_INDEX,
         };
 
         // Write the index pad
         write_pipeline(
             index_pad_context,
-            vec![preserved_index_pad.unwrap_or(index_pad)],
+            vec![index_pad],
             no_verify,
             put_callback.clone(),
         )
         .await?;
     }
 
-    // Final completion callback after all pipelines are done
+    // Final completion callback
     invoke_put_callback(&put_callback, PutEvent::Complete)
         .await
         .unwrap();
@@ -146,15 +242,17 @@ pub async fn resume(
 
     let chunk_ranges = index.read().await.chunk_data(&data_bytes, mode.clone());
 
+    // If the number of pads doesn't match the number of chunks, use the efficient update
+    // which can handle adding or removing pads as needed
     if pads.len() != chunk_ranges.len() {
-        warn!(
-            "Resuming key '{}' with data size mismatch. Index has {} pads, current data requires {}. Forcing rewrite.",
+        info!(
+            "Resuming key '{}' with data size mismatch. Index has {} pads, current data requires {}. Using efficient update.",
             name,
             pads.len(),
             chunk_ranges.len()
         );
-        index.write().await.remove_key(name)?;
-        return first_store(
+
+        return update(
             index,
             network,
             name,
@@ -162,10 +260,29 @@ pub async fn resume(
             mode,
             public,
             no_verify,
-            put_callback.clone(),
+            put_callback,
         )
         .await;
     }
+
+    // If all checksums match, we can just return success
+    if index.read().await.verify_checksum(name, &data_bytes, mode.clone()) {
+        info!("All checksums match for key '{}', no upload needed", name);
+
+        // Final completion callback
+        invoke_put_callback(&put_callback, PutEvent::Complete)
+            .await
+            .unwrap();
+
+        return Ok(pads[0].address);
+    }
+
+    // If we get here, we need to upload the data but the pad count matches
+    let encoding = if public {
+        DATA_ENCODING_PUBLIC_DATA
+    } else {
+        DATA_ENCODING_PRIVATE_DATA
+    };
 
     let context = Context {
         index: index.clone(),
@@ -174,11 +291,16 @@ pub async fn resume(
         data: data_bytes.clone(),
         chunk_ranges: Arc::new(chunk_ranges),
         public,
-        preserved_index_pad: None,
-        is_index_pad: false, // This is for data pads, not the index pad
+        encoding,
     };
 
-    write_pipeline(context, pads.clone(), no_verify, put_callback.clone()).await?;
+    // Mark pads as Free to ensure they get uploaded
+    let mut pads_to_write = pads.clone();
+    for pad in &mut pads_to_write {
+        pad.status = PadStatus::Free;
+    }
+
+    write_pipeline(context, pads_to_write, no_verify, put_callback.clone()).await?;
 
     if public {
         let (index_pad, index_data) = index.write().await.populate_index_pad(name)?;
@@ -186,15 +308,13 @@ pub async fn resume(
         let index_chunk_ranges = Arc::new(vec![0..index_data_bytes.len()]);
 
         let index_pad_context = Context {
-            // Reuse index and network Arcs
             index: index.clone(),
             network: network.clone(),
-            name: Arc::new(name.to_string()), // Reuse name Arc
+            name: Arc::new(name.to_string()),
             chunk_ranges: index_chunk_ranges,
             data: index_data_bytes,
-            public, // Keep public flag
-            preserved_index_pad: None, // No preserved index pad for normal operations
-            is_index_pad: true, // This is an index pad
+            public,
+            encoding: DATA_ENCODING_PUBLIC_INDEX,
         };
 
         // Call write_pipeline again for the single index pad
@@ -202,7 +322,7 @@ pub async fn resume(
             index_pad_context,
             vec![index_pad],
             no_verify,
-            put_callback.clone(), // Clone the callback Arc again
+            put_callback.clone(),
         )
         .await?;
     }
@@ -229,6 +349,12 @@ pub async fn first_store(
 
     let address = pads[0].address;
 
+    let encoding = if public {
+        DATA_ENCODING_PUBLIC_DATA
+    } else {
+        DATA_ENCODING_PRIVATE_DATA
+    };
+
     let context = Context {
         index: index.clone(),
         network: network.clone(),
@@ -236,8 +362,7 @@ pub async fn first_store(
         chunk_ranges: Arc::new(chunk_ranges),
         data: data_bytes.clone(),
         public,
-        preserved_index_pad: None,
-        is_index_pad: false, // This is for data pads, not the index pad
+        encoding,
     };
 
     write_pipeline(context, pads.clone(), no_verify, put_callback.clone()).await?;
@@ -255,8 +380,7 @@ pub async fn first_store(
             chunk_ranges: index_chunk_ranges,
             data: index_data_bytes,
             public, // Keep public flag
-            preserved_index_pad: None, // No preserved index pad for normal operations
-            is_index_pad: true, // This is an index pad
+            encoding: DATA_ENCODING_PUBLIC_INDEX,
         };
 
         // Call write_pipeline again for the single index pad
