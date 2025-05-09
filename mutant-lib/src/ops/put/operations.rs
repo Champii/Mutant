@@ -55,12 +55,7 @@ pub async fn update(
     };
 
     // Compare the number of pads needed for the new content vs. existing pads
-    let existing_data_pads_count = if public {
-        // For public keys, exclude the index pad from the count
-        existing_pads.len()
-    } else {
-        existing_pads.len()
-    };
+    let existing_data_pads_count = existing_pads.len();
 
     let new_data_pads_count = chunk_ranges.len();
 
