@@ -20,7 +20,7 @@ impl MasterIndex {
         }
 
         let chunk_ranges = self.chunk_data(data_bytes, mode);
-        let pads = self.aquire_pads(data_bytes, &chunk_ranges)?;
+        let pads = self.acquire_pads(data_bytes, &chunk_ranges)?;
 
         if public {
             // Empty index pad info for now

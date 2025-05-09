@@ -22,7 +22,7 @@ impl MasterIndex {
         ranges
     }
 
-    pub fn aquire_pads(
+    pub fn acquire_pads(
         &mut self,
         data_bytes: &[u8],
         chunk_ranges: &[Range<usize>],
@@ -45,9 +45,10 @@ impl MasterIndex {
         for (i, range) in ranges.iter().enumerate() {
             let chunk_data_slice = &data_bytes[range.clone()];
             let mut pad_info = available_pads.remove(0);
-            pad_info.chunk_index = i;
-            pad_info.size = chunk_data_slice.len();
-            pad_info.checksum = PadInfo::checksum(chunk_data_slice);
+            // Create a temporary PadInfo with the correct properties
+            let temp_pad = PadInfo::new(chunk_data_slice, i);
+            // Update the pad info with the properties from the temp pad, but don't increment counter
+            Self::update_pad_properties(&mut pad_info, &temp_pad, false);
             generated_pads.push(pad_info);
         }
 
@@ -152,10 +153,7 @@ impl MasterIndex {
                         let old_pad = pads[pad_index].clone();
 
                         // Configure the new pad based on the old one
-                        new_pad.checksum = old_pad.checksum;
-                        new_pad.size = old_pad.size;
-                        new_pad.chunk_index = old_pad.chunk_index;
-                        new_pad.last_known_counter = old_pad.last_known_counter + 1;
+                        Self::update_pad_properties(&mut new_pad, &old_pad, true);
                         // new_pad already has its new address and sk_bytes
 
                         // Replace the old pad info in the vector
@@ -176,10 +174,7 @@ impl MasterIndex {
                         let old_pad = index_pad.clone();
 
                         // Configure the new pad based on the old one
-                        new_pad.checksum = old_pad.checksum;
-                        new_pad.size = old_pad.size;
-                        new_pad.chunk_index = old_pad.chunk_index; // Should be 0
-                        new_pad.last_known_counter = old_pad.last_known_counter + 1;
+                        Self::update_pad_properties(&mut new_pad, &old_pad, true);
 
                         // Replace the index pad info
                         *index_pad = new_pad.clone();
@@ -194,10 +189,7 @@ impl MasterIndex {
                             let old_pad = pads[data_pad_index].clone();
 
                             // Configure the new pad info based on the old one
-                            new_pad.checksum = old_pad.checksum;
-                            new_pad.size = old_pad.size;
-                            new_pad.chunk_index = old_pad.chunk_index;
-                            new_pad.last_known_counter = old_pad.last_known_counter + 1;
+                            Self::update_pad_properties(&mut new_pad, &old_pad, true);
                             // new_pad already has its new address and sk_bytes
 
                             // Replace the old pad info in the vector
@@ -244,5 +236,19 @@ impl MasterIndex {
         });
 
         address_exists || index_exists
+    }
+
+    /// Helper function to update a pad's properties based on another pad
+    /// This is used when recycling pads or updating pad information
+    pub(crate) fn update_pad_properties(target_pad: &mut PadInfo, source_pad: &PadInfo, increment_counter: bool) {
+        target_pad.checksum = source_pad.checksum;
+        target_pad.size = source_pad.size;
+        target_pad.chunk_index = source_pad.chunk_index;
+
+        if increment_counter {
+            target_pad.last_known_counter = source_pad.last_known_counter + 1;
+        } else {
+            target_pad.last_known_counter = source_pad.last_known_counter;
+        }
     }
 }

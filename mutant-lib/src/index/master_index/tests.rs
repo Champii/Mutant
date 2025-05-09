@@ -204,7 +204,7 @@ fn test_list() {
 }
 
 #[test]
-fn test_aquire_pads_reuse_free() {
+fn test_acquire_pads_reuse_free() {
     let (_td, mut index) = setup_test_environment();
     let data1 = vec![1u8; DEFAULT_SCRATCHPAD_SIZE];
     let data2 = vec![2u8; DEFAULT_SCRATCHPAD_SIZE];
@@ -240,7 +240,7 @@ fn test_aquire_pads_reuse_free() {
 }
 
 #[test]
-fn test_aquire_pads_generate_new() {
+fn test_acquire_pads_generate_new() {
     let (_td, mut index) = setup_test_environment();
     let data = vec![1u8; DEFAULT_SCRATCHPAD_SIZE * 2];
     let key = "key";
@@ -257,7 +257,7 @@ fn test_aquire_pads_generate_new() {
 }
 
 #[test]
-fn test_aquire_pads_mix_free_and_new() {
+fn test_acquire_pads_mix_free_and_new() {
     let (_td, mut index) = setup_test_environment();
     let data1 = vec![1u8; DEFAULT_SCRATCHPAD_SIZE];
     let data3 = vec![3u8; DEFAULT_SCRATCHPAD_SIZE * 3]; // Requires 3 pads
