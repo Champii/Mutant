@@ -1,6 +1,6 @@
 [package]
 name = "mutant-daemon"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 license = "LGPL-3.0-only"
 description = "Background daemon service for MutAnt distributed mutable key value storage over Autonomi network"
@@ -13,8 +13,8 @@ dialoguer = "0.11"
 directories = "5.0"
 env_logger = "0.11"
 log = "0.4"
-mutant-lib = { path = "../mutant-lib", version = "0.6.1" }
-mutant-protocol = { path = "../mutant-protocol", version = "0.6.1" }
+mutant-lib = { path = "../mutant-lib", version = "0.6.2" }
+mutant-protocol = { path = "../mutant-protocol", version = "0.6.2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"

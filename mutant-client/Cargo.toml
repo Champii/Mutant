@@ -1,13 +1,13 @@
 [package]
 name = "mutant-client"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 license = "LGPL-3.0-only"
 description = "WebSocket client library for MutAnt distributed mutable key value storage over Autonomi network"
 repository = "https://github.com/Champii/MutAnt"
 
 [dependencies]
-mutant-protocol = { path = "../mutant-protocol", version = "0.6.1"}
+mutant-protocol = { path = "../mutant-protocol", version = "0.6.2"}
 
 # Common dependencies
 serde = { version = "1.0", features = ["derive"] }
