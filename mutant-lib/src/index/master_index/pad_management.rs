@@ -54,7 +54,7 @@ impl MasterIndex {
         // self.free_pads.extend(available_pads);
 
         if !available_pads.is_empty() {
-            panic!("Should not have any remaining pads, this is a bug. Stopping there");
+            return Err(Error::Internal("Unexpected remaining pads detected. This indicates a bug.".to_string()));
         }
 
         Ok(generated_pads)
