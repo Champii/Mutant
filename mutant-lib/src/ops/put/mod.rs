@@ -2,6 +2,8 @@ mod context;
 mod operations;
 mod pipeline;
 mod task;
+#[cfg(test)]
+mod tests;
 
 use crate::error::Error;
 use crate::network::Network;

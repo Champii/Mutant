@@ -192,6 +192,7 @@ impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error> for PutTask
                         let size_match = pad.size == get_result.data.len();
                         if checksum_match && counter_match && size_match {
                             pad_state.status = PadStatus::Confirmed;
+
                             match self
                                 .context
                                 .base_context
@@ -202,7 +203,7 @@ impl AsyncTask<PadInfo, PutTaskContext, autonomi::Client, (), Error> for PutTask
                                     &self.context.base_context.name,
                                     &current_pad_address,
                                     PadStatus::Confirmed,
-                                    None,
+                                    Some(get_result.counter), // Pass the actual counter from the network
                                 ) {
                                 Ok(final_pad) => {
                                     confirmation_succeeded = true;
