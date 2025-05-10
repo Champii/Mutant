@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::{error::Error, index::PadStatus};
 use crate::index::error::IndexError;
 use crate::index::pad_info::PadInfo;
 use crate::storage::ScratchpadAddress;
@@ -247,5 +247,21 @@ impl MasterIndex {
         target_pad.checksum = source_pad.checksum;
         target_pad.size = source_pad.size;
         target_pad.chunk_index = source_pad.chunk_index;
+    }
+
+    pub(crate) fn free_pads(&mut self, pads: Vec<PadInfo>) -> Result<(), Error> {
+        for mut pad in pads{
+            if pad.status == PadStatus::Generated {
+                self.pending_verification_pads.push(pad);
+            } else {
+                pad.status = PadStatus::Free;
+                self.free_pads.push(pad);
+            }
+
+        }
+
+        self.save(self.network_choice)?;
+
+        Ok(())
     }
 }

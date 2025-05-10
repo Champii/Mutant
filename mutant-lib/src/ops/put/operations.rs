@@ -143,7 +143,7 @@ pub async fn update(
         // Move excess pads to the free list
         let excess_pads = existing_pads[new_data_pads_count..].to_vec();
 
-        index.write().await.import_raw_pads_private_key(excess_pads)?;
+        index.write().await.free_pads(excess_pads)?;
     }
 
     // Update the key in the master index
