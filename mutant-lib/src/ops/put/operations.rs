@@ -102,10 +102,34 @@ pub async fn update(
 
         // Acquire additional pads for the remaining chunks
         let additional_chunks = chunk_ranges[existing_data_pads_count..].to_vec();
-        let additional_pads = index
+
+        // Determine the start and end of the additional content in the original content
+        let start_offset = additional_chunks[0].start;
+        let end_offset = additional_chunks.last().unwrap().end;
+
+        // Create a slice of the original content
+        let additional_content = Arc::new(content[start_offset..end_offset].to_vec());
+
+        // Create new chunk ranges relative to the slice
+        let mut new_chunk_ranges = Vec::new();
+        for chunk_range in &additional_chunks {
+            // Adjust the range to be relative to the slice
+            let relative_start = chunk_range.start - start_offset;
+            let relative_end = chunk_range.end - start_offset;
+            new_chunk_ranges.push(relative_start..relative_end);
+        }
+
+        // Use the existing acquire_pads method to get the additional pads
+        let mut additional_pads = index
             .write()
             .await
-            .acquire_pads(&content, &additional_chunks)?;
+            .acquire_pads(&additional_content, &new_chunk_ranges)?;
+
+        // Update the chunk indices for the additional pads
+        for (i, pad) in additional_pads.iter_mut().enumerate() {
+            // Set the correct chunk index (offset by the number of existing pads)
+            pad.chunk_index = existing_data_pads_count + i;
+        }
 
         updated_pads.extend(additional_pads);
     } else if new_data_pads_count < existing_data_pads_count {

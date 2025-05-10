@@ -127,12 +127,14 @@ pub async fn write_pipeline(
     let task_processor = PutTaskProcessor::new(put_task_context.clone());
 
     // 3. Create WorkerPoolConfig
+    // For the total_items_hint, we use the number of pads we're actually processing
+    // This ensures the worker pool will only wait for the pads we're sending to it
     let config = WorkerPoolConfig {
         network: context.network.clone(), // Clone network Arc
         client_config: crate::network::client::Config::Put, // Use crate path
         task_processor,
         enable_recycling: true, // Ensure recycling is enabled for PUT
-        total_items_hint: initial_process_count,
+        total_items_hint: initial_process_count, // Use the number of pads we're actually processing
     };
 
     debug!(
