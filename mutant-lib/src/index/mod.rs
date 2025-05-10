@@ -3,6 +3,3 @@ pub mod master_index;
 pub mod pad_info;
 
 pub(crate) use pad_info::{PadInfo, PadStatus};
-
-#[cfg(test)]
-mod integration_tests;

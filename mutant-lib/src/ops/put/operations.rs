@@ -105,7 +105,7 @@ pub async fn update(
         let additional_pads = index
             .write()
             .await
-            .aquire_pads(&content, &additional_chunks)?;
+            .acquire_pads(&content, &additional_chunks)?;
 
         updated_pads.extend(additional_pads);
     } else if new_data_pads_count < existing_data_pads_count {
