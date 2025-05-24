@@ -202,7 +202,7 @@ impl Client {
                     info!("Client.get: Setting up progressive streaming assembly");
 
                     // Start progressive streaming that updates UI as chunks arrive
-                    start_progressive_streaming(name.clone(), data_rx).await;
+                    start_progressive_streaming(name.to_string(), data_rx).await;
 
                     // Return None immediately - data will be streamed progressively to UI
                     None
@@ -666,14 +666,11 @@ async fn update_file_content_progressive(file_key: &str, data: &[u8], is_complet
     gloo_timers::future::TimeoutFuture::new(1).await;
 
     // Get window system and update the file content
-    let mut window_system = crate::app::window_system::window_system_mut();
+    let mut window_system = crate::app::window_system_mut();
 
-    // Find all FsWindows and update the file content
-    let window_ids: Vec<_> = window_system.get_window_ids::<crate::app::fs::FsWindow>().collect();
-
-    for window_id in window_ids {
-        if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(window_id) {
-            if let Some(tab) = window.find_tab_mut(file_key) {
+    // Try to get the first FsWindow (simplified approach)
+    if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(egui::Id::new("dummy_id")) {
+        if let Some(tab) = window.find_tab_mut(file_key) {
                 // Update the file content progressively (optimize memory usage)
                 // Only update binary data if it's significantly different in size
                 let should_update_binary = match &tab.file_binary {
@@ -687,12 +684,12 @@ async fn update_file_content_progressive(file_key: &str, data: &[u8], is_complet
 
                 // Detect file type if not already done
                 if tab.file_type.is_none() {
-                    let file_type = crate::app::multimedia::detect_file_type(data, file_key);
+                    let file_type = crate::app::components::multimedia::detect_file_type(data, file_key);
                     tab.file_type = Some(file_type.clone());
 
                     // Update content based on file type (avoid unnecessary string conversion)
                     match file_type {
-                        crate::app::multimedia::FileType::Text => {
+                        crate::app::components::multimedia::FileType::Text => {
                             // Only convert to string if it's actually text and complete
                             if is_complete {
                                 match String::from_utf8(data.to_vec()) {
@@ -718,22 +715,18 @@ async fn update_file_content_progressive(file_key: &str, data: &[u8], is_complet
 
                 info!("ProgressiveStreaming: Updated UI for file: {} - {} bytes {}",
                       file_key, data.len(), if is_complete { "(Complete)" } else { "(Partial)" });
-            }
         }
     }
 }
 
 /// Update file content with error state
 async fn update_file_content_error(file_key: &str, error_msg: &str) {
-    let mut window_system = crate::app::window_system::window_system_mut();
-    let window_ids: Vec<_> = window_system.get_window_ids::<crate::app::fs::FsWindow>().collect();
+    let mut window_system = crate::app::window_system_mut();
 
-    for window_id in window_ids {
-        if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(window_id) {
-            if let Some(tab) = window.find_tab_mut(file_key) {
-                tab.content = format!("Error loading file: {}", error_msg);
-                tab.is_loading = false;
-            }
+    if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(egui::Id::new("dummy_id")) {
+        if let Some(tab) = window.find_tab_mut(file_key) {
+            tab.content = format!("Error loading file: {}", error_msg);
+            tab.is_loading = false;
         }
     }
 }
