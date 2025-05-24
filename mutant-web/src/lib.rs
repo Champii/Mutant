@@ -1,5 +1,3 @@
-#![feature(mapped_lock_guards)]
-
 use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use app::{context::init_context, window_system_mut, DEFAULT_WS_URL};
@@ -38,8 +36,8 @@ pub fn start() {
 
 pub async fn async_start() {
     init_context().await;
+    #[cfg(target_arch = "wasm32")]
     run();
-
 }
 
 pub enum ClientRequest {
@@ -747,6 +745,7 @@ impl eframe::App for MyApp {
 //     });
 // }
 
+#[cfg(target_arch = "wasm32")]
 pub fn run() {
     use wasm_bindgen::JsCast as _;
 

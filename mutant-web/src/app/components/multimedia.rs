@@ -4,6 +4,7 @@ use image;
 use mime_guess::from_path;
 use wasm_bindgen::JsCast;
 use web_sys;
+use js_sys;
 use base64::Engine;
 use std::sync::Arc;
 
@@ -100,7 +101,20 @@ pub fn detect_file_type(data: &[u8], file_path: &str) -> FileType {
         return FileType::Video;
     }
 
-    // If MIME detection fails, try to detect by content
+    // If MIME detection fails, try to detect by content using magic numbers
+    if data.len() >= 4 {
+        // Check for video magic numbers first
+        if detect_video_by_magic_numbers(data) {
+            return FileType::Video;
+        }
+
+        // Check for image magic numbers
+        if detect_image_by_magic_numbers(data) {
+            return FileType::Image;
+        }
+    }
+
+    // If still no match, try UTF-8 text detection
     if let Ok(_) = String::from_utf8(data[0..std::cmp::min(1024, data.len())].to_vec()) {
         // If the first 1KB is valid UTF-8, it's probably text
         // Check if it's code
@@ -110,24 +124,94 @@ pub fn detect_file_type(data: &[u8], file_path: &str) -> FileType {
         return FileType::Text;
     }
 
-    // Check for image magic numbers
-    if data.len() >= 4 {
-        // PNG signature
-        if &data[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10] {
-            return FileType::Image;
-        }
-        // JPEG signature
-        if &data[0..3] == &[255, 216, 255] {
-            return FileType::Image;
-        }
-        // GIF signature
-        if &data[0..6] == &[71, 73, 70, 56, 57, 97] || &data[0..6] == &[71, 73, 70, 56, 55, 97] {
-            return FileType::Image;
+    // Default to Other if we can't determine the type
+    FileType::Other
+}
+
+/// Detect video files by magic numbers
+fn detect_video_by_magic_numbers(data: &[u8]) -> bool {
+    if data.len() < 8 {
+        return false;
+    }
+
+    // MP4 and related formats (ftyp box)
+    if data.len() >= 8 && &data[4..8] == b"ftyp" {
+        return true;
+    }
+
+    // AVI format (RIFF...AVI )
+    if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"AVI " {
+        return true;
+    }
+
+    // MOV format (QuickTime)
+    if data.len() >= 8 {
+        // Check for various QuickTime signatures
+        if &data[4..8] == b"moov" || &data[4..8] == b"mdat" || &data[4..8] == b"wide" {
+            return true;
         }
     }
 
-    // Default to Other if we can't determine the type
-    FileType::Other
+    // WebM format (EBML header)
+    if data.len() >= 4 && &data[0..4] == &[0x1A, 0x45, 0xDF, 0xA3] {
+        return true;
+    }
+
+    // FLV format
+    if data.len() >= 3 && &data[0..3] == b"FLV" {
+        return true;
+    }
+
+    // MKV format (Matroska EBML)
+    if data.len() >= 4 && &data[0..4] == &[0x1A, 0x45, 0xDF, 0xA3] {
+        return true;
+    }
+
+    // 3GP format
+    if data.len() >= 8 && &data[4..8] == b"3gp" {
+        return true;
+    }
+
+    false
+}
+
+/// Detect image files by magic numbers
+fn detect_image_by_magic_numbers(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+
+    // PNG signature
+    if data.len() >= 8 && &data[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10] {
+        return true;
+    }
+
+    // JPEG signature
+    if data.len() >= 3 && &data[0..3] == &[255, 216, 255] {
+        return true;
+    }
+
+    // GIF signature
+    if data.len() >= 6 && (&data[0..6] == &[71, 73, 70, 56, 57, 97] || &data[0..6] == &[71, 73, 70, 56, 55, 97]) {
+        return true;
+    }
+
+    // BMP signature
+    if data.len() >= 2 && &data[0..2] == b"BM" {
+        return true;
+    }
+
+    // TIFF signatures
+    if data.len() >= 4 && (&data[0..4] == &[73, 73, 42, 0] || &data[0..4] == &[77, 77, 0, 42]) {
+        return true;
+    }
+
+    // WebP signature
+    if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return true;
+    }
+
+    false
 }
 
 /// Get the programming language from a file extension
@@ -322,12 +406,63 @@ pub fn draw_video_player(ui: &mut Ui, video_url: &str) {
         });
 }
 
-/// Draw an error message for unsupported file types
-pub fn draw_unsupported_file(ui: &mut Ui) {
+/// Draw an error message for unsupported file types with download button
+pub fn draw_unsupported_file(ui: &mut Ui, file_data: Option<&[u8]>, filename: &str) {
     ui.colored_label(
         Color32::RED,
-        "This file type is not supported for viewing. You can download the file instead."
+        "This file type is not supported for viewing."
     );
+
+    ui.add_space(10.0);
+
+    if let Some(data) = file_data {
+        if ui.button("📥 Download File").clicked() {
+            download_file(data, filename);
+        }
+    } else {
+        ui.colored_label(
+            Color32::GRAY,
+            "File data not available for download."
+        );
+    }
+}
+
+/// Trigger a file download in the browser
+fn download_file(data: &[u8], filename: &str) {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, Url};
+
+    if let Some(window) = web_sys::window() {
+        if let Some(document) = window.document() {
+            // Create a blob from the file data
+            let uint8_array = js_sys::Uint8Array::new_with_length(data.len() as u32);
+            uint8_array.copy_from(data);
+
+            let array = js_sys::Array::new();
+            array.push(&uint8_array);
+
+            if let Ok(blob) = Blob::new_with_u8_array_sequence(&array) {
+                if let Ok(url) = Url::create_object_url_with_blob(&blob) {
+                    // Create a temporary anchor element to trigger download
+                    if let Ok(anchor) = document.create_element("a") {
+                        let anchor = anchor.dyn_into::<web_sys::HtmlElement>().unwrap();
+                        anchor.set_attribute("href", &url).unwrap();
+                        anchor.set_attribute("download", filename).unwrap();
+                        anchor.style().set_property("display", "none").unwrap();
+
+                        // Add to document, click, and remove
+                        if let Ok(_) = document.body().unwrap().append_child(&anchor) {
+                            anchor.click();
+                            let _ = document.body().unwrap().remove_child(&anchor);
+                        }
+
+                        // Clean up the object URL
+                        Url::revoke_object_url(&url).unwrap();
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Load an image from raw data

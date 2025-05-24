@@ -425,8 +425,13 @@ impl FileViewerTab {
                     }
                 },
                 multimedia::FileType::Other => {
-                    // Unsupported file type
-                    multimedia::draw_unsupported_file(ui);
+                    // Unsupported file type with download option
+                    let file_data = self.file_binary.as_deref();
+                    let filename = std::path::Path::new(&self.file.key)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| self.file.key.clone());
+                    multimedia::draw_unsupported_file(ui, file_data, &filename);
                 },
             }
         } else {
