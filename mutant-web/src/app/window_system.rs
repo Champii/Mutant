@@ -1,4 +1,4 @@
-use std::sync::{Arc, MappedRwLockWriteGuard, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use eframe::egui::{self, CornerRadius, Id, RichText, SidePanel};
 use egui_dock::{DockArea, DockState, Style};
@@ -22,16 +22,14 @@ lazy_static::lazy_static! {
         = RwLock::new(None);
 }
 
-fn new_window_tx() -> MappedRwLockWriteGuard<'static, futures::channel::mpsc::Sender<WindowType>> {
-    RwLockWriteGuard::map(NEW_WINDOW_TX.write().unwrap(), |lol| match lol {
-        Some(x) => x,
-        None => panic!("Game not initialized"),
-    })
-}
-
 pub fn new_window<T: Into<WindowType> + 'static>(window: T) {
     wasm_bindgen_futures::spawn_local(async move {
-        new_window_tx().send(window.into()).await.unwrap();
+        let mut tx_guard = NEW_WINDOW_TX.write().unwrap();
+        if let Some(tx) = tx_guard.as_mut() {
+            tx.send(window.into()).await.unwrap();
+        } else {
+            panic!("Game not initialized");
+        }
     });
 }
 
