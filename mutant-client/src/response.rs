@@ -390,7 +390,15 @@ impl MutantClient {
                                 }
                             }
                             nash_ws::Message::Binary(data) => {
-                                info!("CLIENT: Received binary WebSocket message of {} bytes, expected text", data.len());
+                                info!("CLIENT: Received binary WebSocket message of {} bytes", data.len());
+
+                                // Handle binary data protocol
+                                if let Some(data_response) = parse_binary_data_message(&data) {
+                                    handle_binary_data_response(data_response, task_channels.clone());
+                                } else {
+                                    warn!("CLIENT: Failed to parse binary data message of {} bytes", data.len());
+                                }
+
                                 // Continue the loop to wait for the next message
                                 continue;
                             }
@@ -415,6 +423,73 @@ impl MutantClient {
             error!("CLIENT: WebSocket receiver is None (not connected)");
             None
         }
+    }
+}
+
+/// Parse binary data message using our custom protocol
+/// Format: [MAGIC_BYTES(4)][TASK_ID(8)][CHUNK_INDEX(8)][TOTAL_CHUNKS(8)][IS_LAST(1)][DATA_LEN(8)][DATA]
+fn parse_binary_data_message(data: &[u8]) -> Option<mutant_protocol::GetDataResponse> {
+    const MAGIC: &[u8; 4] = b"MTNT";
+    const HEADER_SIZE: usize = 4 + 8 + 8 + 8 + 1 + 8; // 37 bytes
+
+    if data.len() < HEADER_SIZE {
+        warn!("Binary message too short: {} bytes, expected at least {}", data.len(), HEADER_SIZE);
+        return None;
+    }
+
+    // Check magic bytes
+    if &data[0..4] != MAGIC {
+        warn!("Invalid magic bytes in binary message");
+        return None;
+    }
+
+    // Parse header
+    let task_id = u64::from_le_bytes(data[4..12].try_into().ok()?);
+    let chunk_index = u64::from_le_bytes(data[12..20].try_into().ok()?) as usize;
+    let total_chunks = u64::from_le_bytes(data[20..28].try_into().ok()?) as usize;
+    let is_last = data[28] != 0;
+    let data_len = u64::from_le_bytes(data[29..37].try_into().ok()?) as usize;
+
+    // Validate data length
+    if data.len() != HEADER_SIZE + data_len {
+        warn!("Data length mismatch: expected {}, got {}", HEADER_SIZE + data_len, data.len());
+        return None;
+    }
+
+    // Extract data payload
+    let payload = data[HEADER_SIZE..].to_vec();
+
+    info!("Parsed binary data: task_id={}, chunk={}/{}, data_len={}, is_last={}",
+          task_id, chunk_index + 1, total_chunks, data_len, is_last);
+
+    Some(mutant_protocol::GetDataResponse {
+        task_id,
+        chunk_index,
+        total_chunks,
+        data: payload,
+        is_last,
+    })
+}
+
+/// Handle binary data response by sending it to the appropriate data stream
+fn handle_binary_data_response(
+    data_response: mutant_protocol::GetDataResponse,
+    task_channels: TaskChannelsMap,
+) {
+    let task_id = data_response.task_id;
+    debug!("Handling binary data response for task {}, chunk {}/{}",
+           task_id, data_response.chunk_index + 1, data_response.total_chunks);
+
+    // Get the data stream sender from the task channels
+    if let Some((_, _, Some(data_stream_tx))) = task_channels.lock().unwrap().get(&task_id) {
+        // Send the data to the client
+        if data_stream_tx.send(Ok(data_response.data)).is_err() {
+            warn!("Failed to send binary data chunk for task {} (receiver dropped)", task_id);
+        } else {
+            debug!("Successfully sent binary data chunk for task {}", task_id);
+        }
+    } else {
+        warn!("Received binary data for task {} but no data stream channel found", task_id);
     }
 }
 
