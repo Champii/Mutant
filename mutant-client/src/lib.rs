@@ -11,8 +11,8 @@ use url::Url;
 use wasm_bindgen_futures::spawn_local;
 
 use mutant_protocol::{
-    ExportResult, HealthCheckResult, ImportResult, KeyDetails, MvRequest, PurgeResult, PutEvent, PutSource, Request,
-    Response, StatsResponse, StorageMode, SyncResult, Task, TaskId, TaskListEntry, TaskProgress,
+    ExportResult, HealthCheckResult, ImportResult, KeyDetails, PurgeResult, PutSource, Request,
+    StatsResponse, StorageMode, SyncResult, Task, TaskId, TaskListEntry, TaskProgress,
     TaskResult, TaskStatus, TaskStoppedResponse, TaskType,
 };
 
