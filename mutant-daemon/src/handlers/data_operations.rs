@@ -359,15 +359,15 @@ pub(crate) async fn handle_get(
                     log::info!("DAEMON CALLBACK: GET task {} - Stored total chunks: {}", task_id, chunks);
                 }
 
-                // Handle streaming data if enabled
+                // Handle streaming data if enabled - use efficient binary transfer
                 if stream_data {
                     if let GetEvent::PadData { chunk_index, data } = &event {
-                        // Send the data chunk directly to the client
+                        // Send the data chunk directly to the client using binary WebSocket message
                         let total = total_chunks.load(std::sync::atomic::Ordering::SeqCst);
                         let is_last = *chunk_index == total - 1;
 
-                        log::info!("DAEMON CALLBACK: GET task {} - Sending GetData response for chunk {}/{} (is_last={})",
-                                  task_id, chunk_index + 1, total, is_last);
+                        log::info!("DAEMON CALLBACK: GET task {} - Sending binary data chunk {}/{} ({} bytes, is_last={})",
+                                  task_id, chunk_index + 1, total, data.len(), is_last);
 
                         if let Err(e) = tx.send(Response::GetData(GetDataResponse {
                             task_id,

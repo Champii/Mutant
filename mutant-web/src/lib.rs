@@ -197,42 +197,15 @@ impl Client {
                 };
                 info!("Client.get: Request has been sent and task completed with ID: {:?}", task_id);
 
-                // If we're streaming data, use parallel chunk assembler
-                let collected_data = if let Some(mut data_rx) = data_stream_rx {
-                    info!("Client.get: Setting up parallel chunk assembler");
+                // If we're streaming data, start progressive streaming assembly
+                let collected_data = if let Some(data_rx) = data_stream_rx {
+                    info!("Client.get: Setting up progressive streaming assembly");
 
-                    // Spawn a task to handle parallel chunk assembly
-                    let (tx, rx) = oneshot::channel();
+                    // Start progressive streaming that updates UI as chunks arrive
+                    start_progressive_streaming(name.clone(), data_rx).await;
 
-                    spawn_local(async move {
-                        info!("Client.get: Started parallel chunk assembler");
-
-                        // Use the new parallel chunk assembler
-                        match parallel_chunk_assembler(data_rx).await {
-                            Ok(data) => {
-                                info!("Client.get: Successfully assembled all data: {} bytes", data.len());
-                                if let Err(_) = tx.send(Some(data)) {
-                                    error!("Failed to send assembled data through channel");
-                                }
-                            }
-                            Err(e) => {
-                                error!("Error in parallel chunk assembler: {:?}", e);
-                                if let Err(_) = tx.send(None) {
-                                    error!("Failed to send error result through channel");
-                                }
-                            }
-                        }
-                    });
-
-                    // Wait for assembly to complete
-                    info!("Client.get: Waiting for parallel chunk assembly to complete");
-                    match rx.await {
-                        Ok(data) => data,
-                        Err(_) => {
-                            error!("Failed to receive assembled data");
-                            None
-                        }
-                    }
+                    // Return None immediately - data will be streamed progressively to UI
+                    None
                 } else {
                     info!("Client.get: No data streaming requested");
                     None
@@ -626,74 +599,143 @@ fn handle_get_progress(mut progress_rx: ProgressReceiver, get_id: String) {
     });
 }
 
-/// Parallel chunk assembler that handles out-of-order chunks efficiently
-/// and keeps the UI responsive by yielding control frequently
-async fn parallel_chunk_assembler(
+/// Progressive streaming that updates the UI as chunks arrive
+/// This completely eliminates the blocking assembly phase
+async fn start_progressive_streaming(
+    file_key: String,
     mut data_rx: mutant_client::DataStreamReceiver
-) -> Result<Vec<u8>, String> {
-    info!("ParallelChunkAssembler: Starting chunk assembly");
+) {
+    info!("ProgressiveStreaming: Starting for file: {}", file_key);
 
-    // Buffer to store chunks as they arrive (out of order)
-    let mut chunk_buffer: std::collections::HashMap<usize, Vec<u8>> = std::collections::HashMap::new();
+    // Buffer to accumulate data progressively with pre-allocation
+    let mut accumulated_data = Vec::with_capacity(1024 * 1024 * 10); // Pre-allocate 10MB
     let mut chunks_received = 0;
     let mut total_bytes = 0;
+    let mut last_ui_update = web_sys::js_sys::Date::now();
 
-    // Collect chunks as they arrive
+    // Process chunks as they arrive and update UI immediately
     while let Some(data_result) = data_rx.recv().await {
         match data_result {
             Ok(chunk_data) => {
-                // For now, we'll treat each chunk as raw data without chunk index
-                // In a real implementation, we'd need to extract chunk metadata
-                // For this optimization, we'll assume chunks arrive in order for simplicity
-                // but process them without blocking
-
                 chunks_received += 1;
                 total_bytes += chunk_data.len();
 
-                info!("ParallelChunkAssembler: Received chunk #{}: {} bytes (total: {} bytes)",
+                info!("ProgressiveStreaming: Received chunk #{}: {} bytes (total: {} bytes)",
                       chunks_received, chunk_data.len(), total_bytes);
 
-                // Store the chunk (using chunks_received as index for now)
-                chunk_buffer.insert(chunks_received - 1, chunk_data);
+                // Accumulate data progressively (avoid unnecessary allocations)
+                accumulated_data.extend_from_slice(&chunk_data);
 
-                // Yield control to keep UI responsive
-                if chunks_received % 10 == 0 {
-                    // Use a small timeout to yield control to the event loop
+                // Update UI based on time and chunk count to optimize performance
+                let current_time = web_sys::js_sys::Date::now();
+                let time_since_last_update = current_time - last_ui_update;
+                let should_update = chunks_received == 1 || // Always update first chunk
+                                  chunks_received % 5 == 0 || // Every 5 chunks
+                                  time_since_last_update > 200.0; // Or every 200ms
+
+                if should_update {
+                    update_file_content_progressive(&file_key, &accumulated_data, false).await;
+                    last_ui_update = current_time;
+                }
+
+                // Yield control every few chunks to keep UI responsive
+                if chunks_received % 3 == 0 {
                     gloo_timers::future::TimeoutFuture::new(1).await;
                 }
             }
             Err(e) => {
-                error!("ParallelChunkAssembler: Error receiving chunk #{}: {:?}", chunks_received + 1, e);
-                return Err(format!("Chunk assembly failed: {:?}", e));
+                error!("ProgressiveStreaming: Error receiving chunk #{}: {:?}", chunks_received + 1, e);
+                // Update UI with error state
+                update_file_content_error(&file_key, &format!("Streaming error: {:?}", e)).await;
+                return;
             }
         }
     }
 
-    info!("ParallelChunkAssembler: Finished receiving chunks. Assembling {} chunks into final data",
-          chunk_buffer.len());
+    // Mark as complete
+    info!("ProgressiveStreaming: Completed for file: {} - {} chunks, {} bytes",
+          file_key, chunks_received, total_bytes);
 
-    // Assemble chunks in order
-    let mut final_data = Vec::with_capacity(total_bytes);
+    // Final UI update marking completion
+    update_file_content_progressive(&file_key, &accumulated_data, true).await;
+}
 
-    // Sort chunks by index and assemble
-    let mut sorted_indices: Vec<usize> = chunk_buffer.keys().cloned().collect();
-    sorted_indices.sort();
+/// Update file content progressively in the UI (non-blocking)
+async fn update_file_content_progressive(file_key: &str, data: &[u8], is_complete: bool) {
+    // Yield immediately to prevent blocking
+    gloo_timers::future::TimeoutFuture::new(1).await;
 
-    for (i, chunk_index) in sorted_indices.iter().enumerate() {
-        if let Some(chunk_data) = chunk_buffer.remove(chunk_index) {
-            final_data.extend(chunk_data);
+    // Get window system and update the file content
+    let mut window_system = crate::app::window_system::window_system_mut();
 
-            // Yield control periodically during assembly
-            if i % 50 == 0 {
-                gloo_timers::future::TimeoutFuture::new(1).await;
+    // Find all FsWindows and update the file content
+    let window_ids: Vec<_> = window_system.get_window_ids::<crate::app::fs::FsWindow>().collect();
+
+    for window_id in window_ids {
+        if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(window_id) {
+            if let Some(tab) = window.find_tab_mut(file_key) {
+                // Update the file content progressively (optimize memory usage)
+                // Only update binary data if it's significantly different in size
+                let should_update_binary = match &tab.file_binary {
+                    Some(existing) => data.len() > existing.len() + 1024 * 100, // Update if 100KB+ difference
+                    None => true, // Always update if no data exists
+                };
+
+                if should_update_binary {
+                    tab.file_binary = Some(data.to_vec());
+                }
+
+                // Detect file type if not already done
+                if tab.file_type.is_none() {
+                    let file_type = crate::app::multimedia::detect_file_type(data, file_key);
+                    tab.file_type = Some(file_type.clone());
+
+                    // Update content based on file type (avoid unnecessary string conversion)
+                    match file_type {
+                        crate::app::multimedia::FileType::Text => {
+                            // Only convert to string if it's actually text and complete
+                            if is_complete {
+                                match String::from_utf8(data.to_vec()) {
+                                    Ok(text) => tab.content = text,
+                                    Err(_) => tab.content = format!("Binary file ({} bytes)", data.len()),
+                                }
+                            } else {
+                                // For partial text, just show progress
+                                tab.content = format!("Loading text file... ({} bytes)", data.len());
+                            }
+                        }
+                        _ => {
+                            tab.content = format!("Binary file ({} bytes) - {}", data.len(),
+                                                 if is_complete { "Complete" } else { "Loading..." });
+                        }
+                    }
+                }
+
+                // Mark as not loading if complete
+                if is_complete {
+                    tab.is_loading = false;
+                }
+
+                info!("ProgressiveStreaming: Updated UI for file: {} - {} bytes {}",
+                      file_key, data.len(), if is_complete { "(Complete)" } else { "(Partial)" });
             }
         }
     }
+}
 
-    info!("ParallelChunkAssembler: Successfully assembled {} bytes from {} chunks",
-          final_data.len(), chunks_received);
+/// Update file content with error state
+async fn update_file_content_error(file_key: &str, error_msg: &str) {
+    let mut window_system = crate::app::window_system::window_system_mut();
+    let window_ids: Vec<_> = window_system.get_window_ids::<crate::app::fs::FsWindow>().collect();
 
-    Ok(final_data)
+    for window_id in window_ids {
+        if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(window_id) {
+            if let Some(tab) = window.find_tab_mut(file_key) {
+                tab.content = format!("Error loading file: {}", error_msg);
+                tab.is_loading = false;
+            }
+        }
+    }
 }
 
 fn handle_put_progress(mut progress_rx: ProgressReceiver) {

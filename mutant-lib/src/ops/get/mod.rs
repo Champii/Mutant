@@ -286,23 +286,28 @@ impl AsyncTask<PadInfo, (), autonomi::Client, (usize, Vec<u8>), Error> for GetSt
                             pad.address, pad.chunk_index, get_result.data.len()
                         );
 
-                        // Stream this chunk immediately via the callback
+                        // Send PadFetched event for progress tracking (less frequently to reduce overhead)
+                        // Only send progress every few chunks to reduce JSON serialization overhead
+                        if pad.chunk_index % 3 == 0 || pad.chunk_index == 0 {
+                            invoke_get_callback(&self.get_callback, GetEvent::PadFetched)
+                                .await
+                                .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
+                        }
+
+                        // Stream this chunk immediately via the callback (move data to avoid clone)
+                        let chunk_data = get_result.data;
                         invoke_get_callback(
                             &self.get_callback,
                             GetEvent::PadData {
                                 chunk_index: pad.chunk_index,
-                                data: get_result.data.clone(),
+                                data: chunk_data.clone(), // Only clone once for callback
                             },
                         )
                         .await
                         .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
 
-                        // Also send PadFetched event for progress tracking
-                        invoke_get_callback(&self.get_callback, GetEvent::PadFetched)
-                            .await
-                            .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
-
-                        return Ok((pad.chunk_index, (pad.chunk_index, get_result.data)));
+                        // Return the data (moved, not cloned again)
+                        return Ok((pad.chunk_index, (pad.chunk_index, chunk_data)));
                     } else {
                         warn!(
                             "GetStreamingTaskProcessor: Validation failed for pad {} (chunk {}): checksum={}, counter={}, size={}",
