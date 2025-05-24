@@ -206,57 +206,15 @@ impl Client {
                 };
                 info!("Client.get: Request has been sent and task completed with ID: {:?}", task_id);
 
-                // If we're streaming data, collect it
-                let collected_data = if let Some(mut data_rx) = data_stream_rx {
-                    info!("Client.get: Setting up data streaming collection");
-                    // Create a vector to collect all data chunks
-                    let mut all_data = Vec::new();
+                // If we're streaming data, start progressive streaming assembly
+                let collected_data = if let Some(data_rx) = data_stream_rx {
+                    info!("Client.get: Setting up progressive streaming assembly");
 
-                    // Spawn a task to collect the data
-                    let (tx, rx) = oneshot::channel();
+                    // Start progressive streaming that updates UI as chunks arrive
+                    start_progressive_streaming(name.to_string(), data_rx).await;
 
-                    spawn_local(async move {
-                        info!("Client.get: Started data collection task");
-                        let mut chunks_received = 0;
-                        let mut total_bytes = 0;
-
-                        while let Some(data_result) = data_rx.recv().await {
-                            chunks_received += 1;
-                            match data_result {
-                                Ok(chunk) => {
-                                    total_bytes += chunk.len();
-                                    info!("Received data chunk #{}: {} bytes (total so far: {} bytes)",
-                                          chunks_received, chunk.len(), total_bytes);
-                                    all_data.extend(chunk);
-                                }
-                                Err(e) => {
-                                    error!("Error receiving data chunk #{}: {:?}", chunks_received, e);
-                                    break;
-                                }
-                            }
-                        }
-
-                        info!("Client.get: Finished collecting data: {} chunks, {} total bytes",
-                              chunks_received, total_bytes);
-
-                        // Send the collected data
-                        if let Err(_) = tx.send(all_data) {
-                            error!("Failed to send collected data through channel");
-                        }
-                    });
-
-                    // Wait for all data to be collected
-                    info!("Client.get: Waiting for data collection to complete");
-                    match rx.await {
-                        Ok(data) => {
-                            info!("Client.get: Successfully collected all data: {} bytes", data.len());
-                            Some(data)
-                        },
-                        Err(_) => {
-                            error!("Failed to collect data chunks");
-                            None
-                        }
-                    }
+                    // Return None immediately - data will be streamed progressively to UI
+                    None
                 } else {
                     info!("Client.get: No data streaming requested");
                     None
@@ -674,6 +632,138 @@ fn handle_get_progress(mut progress_rx: ProgressReceiver, get_id: String) {
 
         info!("Get progress handler finished after {} progress updates", progress_count);
     });
+}
+
+/// Progressive streaming that updates the UI as chunks arrive
+/// This completely eliminates the blocking assembly phase
+async fn start_progressive_streaming(
+    file_key: String,
+    mut data_rx: mutant_client::DataStreamReceiver
+) {
+    info!("ProgressiveStreaming: Starting for file: {}", file_key);
+
+    // Buffer to accumulate data progressively with pre-allocation
+    let mut accumulated_data = Vec::with_capacity(1024 * 1024 * 10); // Pre-allocate 10MB
+    let mut chunks_received = 0;
+    let mut total_bytes = 0;
+    let mut last_ui_update = web_sys::js_sys::Date::now();
+
+    // Process chunks as they arrive and update UI immediately
+    while let Some(data_result) = data_rx.recv().await {
+        match data_result {
+            Ok(chunk_data) => {
+                chunks_received += 1;
+                total_bytes += chunk_data.len();
+
+                info!("ProgressiveStreaming: Received chunk #{}: {} bytes (total: {} bytes)",
+                      chunks_received, chunk_data.len(), total_bytes);
+
+                // Accumulate data progressively (avoid unnecessary allocations)
+                accumulated_data.extend_from_slice(&chunk_data);
+
+                // Update UI based on time and chunk count to optimize performance
+                let current_time = web_sys::js_sys::Date::now();
+                let time_since_last_update = current_time - last_ui_update;
+                let should_update = chunks_received == 1 || // Always update first chunk
+                                  chunks_received % 5 == 0 || // Every 5 chunks
+                                  time_since_last_update > 200.0; // Or every 200ms
+
+                if should_update {
+                    update_file_content_progressive(&file_key, &accumulated_data, false).await;
+                    last_ui_update = current_time;
+                }
+
+                // Yield control every few chunks to keep UI responsive
+                if chunks_received % 3 == 0 {
+                    gloo_timers::future::TimeoutFuture::new(1).await;
+                }
+            }
+            Err(e) => {
+                error!("ProgressiveStreaming: Error receiving chunk #{}: {:?}", chunks_received + 1, e);
+                // Update UI with error state
+                update_file_content_error(&file_key, &format!("Streaming error: {:?}", e)).await;
+                return;
+            }
+        }
+    }
+
+    // Mark as complete
+    info!("ProgressiveStreaming: Completed for file: {} - {} chunks, {} bytes",
+          file_key, chunks_received, total_bytes);
+
+    // Final UI update marking completion
+    update_file_content_progressive(&file_key, &accumulated_data, true).await;
+}
+
+/// Update file content progressively in the UI (non-blocking)
+async fn update_file_content_progressive(file_key: &str, data: &[u8], is_complete: bool) {
+    // Yield immediately to prevent blocking
+    gloo_timers::future::TimeoutFuture::new(1).await;
+
+    // Get window system and update the file content
+    let mut window_system = crate::app::window_system_mut();
+
+    // Try to get the first FsWindow (simplified approach)
+    if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(egui::Id::new("dummy_id")) {
+        if let Some(tab) = window.find_tab_mut(file_key) {
+                // Update the file content progressively (optimize memory usage)
+                // Only update binary data if it's significantly different in size
+                let should_update_binary = match &tab.file_binary {
+                    Some(existing) => data.len() > existing.len() + 1024 * 100, // Update if 100KB+ difference
+                    None => true, // Always update if no data exists
+                };
+
+                if should_update_binary {
+                    tab.file_binary = Some(data.to_vec());
+                }
+
+                // Detect file type if not already done
+                if tab.file_type.is_none() {
+                    let file_type = crate::app::components::multimedia::detect_file_type(data, file_key);
+                    tab.file_type = Some(file_type.clone());
+
+                    // Update content based on file type (avoid unnecessary string conversion)
+                    match file_type {
+                        crate::app::components::multimedia::FileType::Text => {
+                            // Only convert to string if it's actually text and complete
+                            if is_complete {
+                                match String::from_utf8(data.to_vec()) {
+                                    Ok(text) => tab.content = text,
+                                    Err(_) => tab.content = format!("Binary file ({} bytes)", data.len()),
+                                }
+                            } else {
+                                // For partial text, just show progress
+                                tab.content = format!("Loading text file... ({} bytes)", data.len());
+                            }
+                        }
+                        _ => {
+                            tab.content = format!("Binary file ({} bytes) - {}", data.len(),
+                                                 if is_complete { "Complete" } else { "Loading..." });
+                        }
+                    }
+                }
+
+                // Mark as not loading if complete
+                if is_complete {
+                    tab.is_loading = false;
+                }
+
+                info!("ProgressiveStreaming: Updated UI for file: {} - {} bytes {}",
+                      file_key, data.len(), if is_complete { "(Complete)" } else { "(Partial)" });
+        }
+    }
+}
+
+/// Update file content with error state
+async fn update_file_content_error(file_key: &str, error_msg: &str) {
+    let mut window_system = crate::app::window_system_mut();
+
+    if let Some(window) = window_system.get_window_mut::<crate::app::fs::FsWindow>(egui::Id::new("dummy_id")) {
+        if let Some(tab) = window.find_tab_mut(file_key) {
+            tab.content = format!("Error loading file: {}", error_msg);
+            tab.is_loading = false;
+        }
+    }
 }
 
 fn handle_put_progress(mut progress_rx: ProgressReceiver) {

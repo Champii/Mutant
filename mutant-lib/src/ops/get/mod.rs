@@ -228,6 +228,118 @@ impl AsyncTask<PadInfo, (), autonomi::Client, Vec<u8>, Error>
     }
 }
 
+/// Streaming task processor that sends data chunks as they arrive
+#[derive(Clone)]
+struct GetStreamingTaskProcessor {
+    network: Arc<Network>,
+    public: bool,
+    get_callback: Option<GetCallback>,
+}
+
+impl GetStreamingTaskProcessor {
+    fn new(
+        network: Arc<Network>,
+        public: bool,
+        get_callback: Option<GetCallback>,
+    ) -> Self {
+        Self {
+            network,
+            public,
+            get_callback,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncTask<PadInfo, (), autonomi::Client, (usize, Vec<u8>), Error> for GetStreamingTaskProcessor {
+    type ItemId = usize;
+
+    async fn process(
+        &self,
+        _worker_id: usize,
+        client: &autonomi::Client,
+        pad: PadInfo,
+    ) -> Result<(Self::ItemId, (usize, Vec<u8>)), (Error, PadInfo)> {
+        let mut retries_left = 20;
+        let owned_key;
+        let secret_key_ref = if self.public {
+            None
+        } else {
+            owned_key = pad.secret_key();
+            Some(&owned_key)
+        };
+
+        loop {
+            match self
+                .network
+                .get(client, &pad.address, secret_key_ref)
+                .await
+            {
+                Ok(get_result) => {
+                    let checksum_match = pad.checksum == PadInfo::checksum(&get_result.data);
+                    let counter_match = pad.last_known_counter == get_result.counter;
+                    let size_match = pad.size == get_result.data.len();
+
+                    if checksum_match && counter_match && size_match {
+                        debug!(
+                            "GetStreamingTaskProcessor: Successfully fetched pad {} (chunk {}), size: {}",
+                            pad.address, pad.chunk_index, get_result.data.len()
+                        );
+
+                        // Send PadFetched event for progress tracking (less frequently to reduce overhead)
+                        // Only send progress every few chunks to reduce JSON serialization overhead
+                        if pad.chunk_index % 3 == 0 || pad.chunk_index == 0 {
+                            invoke_get_callback(&self.get_callback, GetEvent::PadFetched)
+                                .await
+                                .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
+                        }
+
+                        // Stream this chunk immediately via the callback (move data to avoid clone)
+                        let chunk_data = get_result.data;
+                        invoke_get_callback(
+                            &self.get_callback,
+                            GetEvent::PadData {
+                                chunk_index: pad.chunk_index,
+                                data: chunk_data.clone(), // Only clone once for callback
+                            },
+                        )
+                        .await
+                        .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
+
+                        // Return the data (moved, not cloned again)
+                        return Ok((pad.chunk_index, (pad.chunk_index, chunk_data)));
+                    } else {
+                        warn!(
+                            "GetStreamingTaskProcessor: Validation failed for pad {} (chunk {}): checksum={}, counter={}, size={}",
+                            pad.address, pad.chunk_index, checksum_match, counter_match, size_match
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "GetStreamingTaskProcessor: GET failed for pad {} (chunk {}): {:?}",
+                        pad.address, pad.chunk_index, e
+                    );
+                }
+            }
+
+            retries_left -= 1;
+
+            if retries_left <= 0 {
+                return Err((
+                    Error::Internal(format!(
+                        "GET failed for pad {} (chunk {}) after {} retries",
+                        pad.address, pad.chunk_index, 20
+                    )),
+                    pad,
+                ));
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+
 async fn fetch_pads_data(
     network: Arc<Network>,
     pads: Vec<PadInfo>,
@@ -380,7 +492,8 @@ async fn fetch_pads_data(
 }
 
 /// Fetches pads and streams them back via the callback as they arrive.
-/// This version doesn't collect all data in memory but sends it chunk by chunk.
+/// This version uses parallel fetching with the worker pool for maximum efficiency.
+/// Data chunks are streamed immediately as they're downloaded, without waiting for order.
 async fn fetch_pads_data_streaming(
     network: Arc<Network>,
     pads: Vec<PadInfo>,
@@ -389,7 +502,7 @@ async fn fetch_pads_data_streaming(
 ) -> Result<Vec<u8>, Error> {
     let total_pads_to_fetch = pads.len();
     debug!(
-        "fetch_pads_data_streaming: Starting to fetch {} pads, public={}",
+        "fetch_pads_data_streaming: Starting to fetch {} pads in parallel, public={}",
         total_pads_to_fetch, public
     );
 
@@ -401,82 +514,78 @@ async fn fetch_pads_data_streaming(
         return Ok(Vec::new());
     }
 
-    // Create a client for fetching
-    let client = network
-        .get_client(crate::network::client::Config::Get)
-        .await
-        .map_err(|e| Error::Network(NetworkError::ClientAccessError(e.to_string())))?;
+    // No need to sort pads for parallel streaming - they'll be processed in any order
+    // The worker pool will handle client management
 
-    // Sort pads by chunk_index to ensure we process them in order
-    let mut sorted_pads = pads;
-    sorted_pads.sort_by_key(|pad| pad.chunk_index);
+    // Use parallel processing with the worker pool for maximum efficiency
+    // Create a streaming task processor that sends data chunks as they arrive
+    let task_processor = GetStreamingTaskProcessor::new(network.clone(), public, get_callback.clone());
 
-    // Keep track of total data size for the final result
-    let mut total_data_size = 0;
+    // Create WorkerPoolConfig for parallel streaming
+    let config = WorkerPoolConfig {
+        network,
+        client_config: crate::network::client::Config::Get,
+        task_processor,
+        enable_recycling: false,
+        total_items_hint: total_pads_to_fetch,
+    };
 
-    // Process each pad sequentially
-    for pad in sorted_pads {
-        let mut retries_left = 20;
-        let owned_key;
-        let secret_key_ref = if public {
-            None
-        } else {
-            owned_key = pad.secret_key();
-            Some(&owned_key)
+    // Build WorkerPool for parallel processing
+    let pool = match worker::build(config, None).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            error!("Failed to build worker pool for streaming GET: {:?}", e);
+            return match e {
+                PoolError::ClientAcquisitionError(msg) => {
+                    Err(Error::Network(NetworkError::ClientAccessError(msg)))
+                }
+                _ => Err(Error::Internal(format!("Pool build failed: {:?}", e))),
+            };
+        }
+    };
+
+    // Send pads to the pool for parallel processing (no need to sort for streaming)
+    if let Err(e) = pool.send_items(pads).await {
+        error!("Failed to send pads to worker pool for streaming GET: {:?}", e);
+        return match e {
+            PoolError::PoolSetupError(msg) => Err(Error::Internal(msg)),
+            _ => Err(Error::Internal(format!("Pool send_items failed: {:?}", e))),
         };
+    }
 
-        // Try to fetch the pad with retries
-        loop {
-            match network.get(&client, &pad.address, secret_key_ref).await {
-                Ok(get_result) => {
-                    let checksum_match = pad.checksum == PadInfo::checksum(&get_result.data);
-                    let counter_match = pad.last_known_counter == get_result.counter;
-                    let size_match = pad.size == get_result.data.len();
+    // Run the Worker Pool - results are streamed via callbacks, not collected
+    debug!(
+        "fetch_pads_data_streaming: Running worker pool to fetch {} pads in parallel",
+        total_pads_to_fetch
+    );
+    let pool_run_result = pool.run(None).await;
+    debug!("fetch_pads_data_streaming: Worker pool run completed");
 
-                    if checksum_match && counter_match && size_match {
-                        // Update total size
-                        total_data_size += get_result.data.len();
-
-                        // Send regular PadFetched event for progress tracking
-                        invoke_get_callback(&get_callback, GetEvent::PadFetched)
-                            .await
-                            .map_err(|e| Error::Internal(format!("Callback error: {}", e)))?;
-
-                        // Send the data via the callback
-                        invoke_get_callback(
-                            &get_callback,
-                            GetEvent::PadData {
-                                chunk_index: pad.chunk_index,
-                                data: get_result.data,
-                            },
-                        )
-                        .await
-                        .map_err(|e| Error::Internal(format!("Callback error: {}", e)))?;
-
-                        // Break out of the retry loop
-                        break;
-                    }
-                }
-                Err(_) => {
-                    // Error handling
-                }
-            }
-
-            retries_left -= 1;
-
-            warn!(
-                "GET failed for pad {} (chunk {}). Retries left: {}",
-                pad.address, pad.chunk_index, retries_left
+    // Process results - we don't collect data, just verify completion
+    match pool_run_result {
+        Ok(fetched_results) => {
+            debug!(
+                "fetch_pads_data_streaming: Got {} results from worker pool",
+                fetched_results.len()
             );
-
-            if retries_left <= 0 {
+            if fetched_results.len() != total_pads_to_fetch {
+                warn!(
+                    "GET result count mismatch: expected {}, got {}. Some pads might have failed.",
+                    total_pads_to_fetch,
+                    fetched_results.len()
+                );
                 return Err(Error::Internal(format!(
-                    "GET failed for pad {} (chunk {}) after {} retries",
-                    pad.address, pad.chunk_index, 20
+                    "Streaming GET failed: Fetched {} pads, expected {}",
+                    fetched_results.len(),
+                    total_pads_to_fetch
                 )));
             }
 
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            debug!("fetch_pads_data_streaming: All pads streamed successfully");
+        }
+        Err(e) => {
+            error!("fetch_pads_data_streaming: Worker pool failed: {:?}", e);
+            return Err(Error::Internal(format!("Streaming GET pool failed: {:?}", e)));
         }
     }
 
@@ -485,11 +594,6 @@ async fn fetch_pads_data_streaming(
         .await
         .unwrap();
 
-    // Return an empty Vec since we've already streamed all the data
-    // The total_data_size is just for reporting purposes
-    debug!("fetch_pads_data_streaming: Streamed total data size: {}", total_data_size);
-
-    // We still return the size so the caller knows how much data was processed
-    // but we don't actually collect it all in memory
-    Ok(Vec::new())
+    debug!("fetch_pads_data_streaming: All pads processed successfully");
+    Ok(Vec::new()) // Return empty since data was streamed
 }
