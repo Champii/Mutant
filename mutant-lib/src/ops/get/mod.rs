@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::events::{GetCallback, GetEvent};
 use crate::index::{master_index::MasterIndex, PadInfo};
 use crate::internal_events::invoke_get_callback;
-use crate::network::client::{Client, Config};
+use crate::network::client::Config;
 use crate::network::{Network, NetworkError};
 use crate::ops::worker::{self, AsyncTask, PoolError, WorkerPoolConfig};
 use async_trait::async_trait;
@@ -251,19 +251,15 @@ impl GetStreamingTaskProcessor {
 }
 
 #[async_trait::async_trait]
-impl AsyncTask<PadInfo, (), Client, (usize, Vec<u8>), Error> for GetStreamingTaskProcessor {
+impl AsyncTask<PadInfo, (), autonomi::Client, (usize, Vec<u8>), Error> for GetStreamingTaskProcessor {
     type ItemId = usize;
-
-    fn item_id(&self, item: &PadInfo) -> Self::ItemId {
-        item.chunk_index
-    }
 
     async fn process(
         &self,
-        client: &Client,
+        _worker_id: usize,
+        client: &autonomi::Client,
         pad: PadInfo,
-        _context: &(),
-    ) -> Result<(usize, Vec<u8>), Error> {
+    ) -> Result<(Self::ItemId, (usize, Vec<u8>)), (Error, PadInfo)> {
         let mut retries_left = 20;
         let owned_key;
         let secret_key_ref = if self.public {
@@ -299,14 +295,14 @@ impl AsyncTask<PadInfo, (), Client, (usize, Vec<u8>), Error> for GetStreamingTas
                             },
                         )
                         .await
-                        .map_err(|e| Error::Internal(format!("Callback error: {}", e)))?;
+                        .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
 
                         // Also send PadFetched event for progress tracking
                         invoke_get_callback(&self.get_callback, GetEvent::PadFetched)
                             .await
-                            .map_err(|e| Error::Internal(format!("Callback error: {}", e)))?;
+                            .map_err(|e| (Error::Internal(format!("Callback error: {}", e)), pad.clone()))?;
 
-                        return Ok((pad.chunk_index, get_result.data));
+                        return Ok((pad.chunk_index, (pad.chunk_index, get_result.data)));
                     } else {
                         warn!(
                             "GetStreamingTaskProcessor: Validation failed for pad {} (chunk {}): checksum={}, counter={}, size={}",
@@ -325,10 +321,13 @@ impl AsyncTask<PadInfo, (), Client, (usize, Vec<u8>), Error> for GetStreamingTas
             retries_left -= 1;
 
             if retries_left <= 0 {
-                return Err(Error::Internal(format!(
-                    "GET failed for pad {} (chunk {}) after {} retries",
-                    pad.address, pad.chunk_index, 20
-                )));
+                return Err((
+                    Error::Internal(format!(
+                        "GET failed for pad {} (chunk {}) after {} retries",
+                        pad.address, pad.chunk_index, 20
+                    )),
+                    pad,
+                ));
             }
 
             tokio::time::sleep(Duration::from_secs(1)).await;

@@ -629,7 +629,7 @@ fn handle_get_progress(mut progress_rx: ProgressReceiver, get_id: String) {
 /// Parallel chunk assembler that handles out-of-order chunks efficiently
 /// and keeps the UI responsive by yielding control frequently
 async fn parallel_chunk_assembler(
-    mut data_rx: futures::channel::mpsc::UnboundedReceiver<Result<Vec<u8>, String>>
+    mut data_rx: mutant_client::DataStreamReceiver
 ) -> Result<Vec<u8>, String> {
     info!("ParallelChunkAssembler: Starting chunk assembly");
 
@@ -664,7 +664,7 @@ async fn parallel_chunk_assembler(
             }
             Err(e) => {
                 error!("ParallelChunkAssembler: Error receiving chunk #{}: {:?}", chunks_received + 1, e);
-                break;
+                return Err(format!("Chunk assembly failed: {:?}", e));
             }
         }
     }
