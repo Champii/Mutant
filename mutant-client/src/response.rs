@@ -1,6 +1,6 @@
 use log::{debug, error, info, trace, warn};
 use mutant_protocol::{
-    ErrorResponse, ExportResponse, ImportResponse, ListKeysResponse, Response,
+    ErrorResponse, ExportResponse, GetDataResponse, ImportResponse, ListKeysResponse, Response,
     RmSuccessResponse, Task, TaskCreatedResponse, TaskListResponse, TaskProgress,
     TaskResult, TaskResultResponse, TaskStatus, TaskStoppedResponse, TaskType,
     TaskUpdateResponse,
@@ -428,7 +428,7 @@ impl MutantClient {
 
 /// Parse binary data message using our custom protocol
 /// Format: [MAGIC_BYTES(4)][TASK_ID(8)][CHUNK_INDEX(8)][TOTAL_CHUNKS(8)][IS_LAST(1)][DATA_LEN(8)][DATA]
-fn parse_binary_data_message(data: &[u8]) -> Option<mutant_protocol::GetDataResponse> {
+fn parse_binary_data_message(data: &[u8]) -> Option<GetDataResponse> {
     const MAGIC: &[u8; 4] = b"MTNT";
     const HEADER_SIZE: usize = 4 + 8 + 8 + 8 + 1 + 8; // 37 bytes
 
@@ -462,7 +462,7 @@ fn parse_binary_data_message(data: &[u8]) -> Option<mutant_protocol::GetDataResp
     info!("Parsed binary data: task_id={}, chunk={}/{}, data_len={}, is_last={}",
           task_id, chunk_index + 1, total_chunks, data_len, is_last);
 
-    Some(mutant_protocol::GetDataResponse {
+    Some(GetDataResponse {
         task_id,
         chunk_index,
         total_chunks,
@@ -473,7 +473,7 @@ fn parse_binary_data_message(data: &[u8]) -> Option<mutant_protocol::GetDataResp
 
 /// Handle binary data response by sending it to the appropriate data stream
 fn handle_binary_data_response(
-    data_response: mutant_protocol::GetDataResponse,
+    data_response: GetDataResponse,
     task_channels: TaskChannelsMap,
 ) {
     let task_id = data_response.task_id;
