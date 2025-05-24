@@ -265,6 +265,7 @@ impl PutWindow {
         let selected_file = self.selected_file.clone();
         let file_size = self.file_size.clone();
         let file_data = self.file_data.clone();
+        let key_name = self.key_name.clone();
 
         // Create a file input element
         let window = web_sys::window().expect("no global window exists");
@@ -305,6 +306,15 @@ impl PutWindow {
                 // Update state with file name and size
                 *selected_file.write().unwrap() = Some(file_name.clone());
                 *file_size.write().unwrap() = Some(file_size_js as u64);
+
+                // Auto-fill key name if it's empty
+                {
+                    let mut key_name_guard = key_name.write().unwrap();
+                    if key_name_guard.is_empty() {
+                        *key_name_guard = file_name.clone();
+                        log::info!("Auto-filled key name with file name: {}", file_name);
+                    }
+                }
 
                 // Read file content
                 let reader = FileReader::new().expect("failed to create FileReader");
