@@ -4,7 +4,7 @@ use mutant_protocol::StatsResponse;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
 
-use super::{client_manager, Window};
+use super::{context, Window};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StatsWindow {
@@ -229,10 +229,10 @@ impl StatsWindow {
             egui::vec2(card_width, 80.0),
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(color.gamma_multiply(0.1))
                     .stroke(egui::Stroke::new(1.0, color))
-                    .rounding(8.0)
+                    .corner_radius(8.0)
                     .inner_margin(10.0)
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
@@ -252,10 +252,10 @@ impl StatsWindow {
             egui::vec2(card_width, 80.0),
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(color.gamma_multiply(0.1))
                     .stroke(egui::Stroke::new(1.0, color))
-                    .rounding(8.0)
+                    .corner_radius(8.0)
                     .inner_margin(10.0)
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
@@ -315,7 +315,7 @@ impl StatsWindow {
             }
 
             // Draw border
-            ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY));
+            ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::GRAY), egui::StrokeKind::Inside);
         }
     }
 
@@ -330,15 +330,17 @@ impl StatsWindow {
 
         // Spawn async task to fetch real stats
         spawn_local(async move {
-            match client_manager::get_stats().await {
-                Ok(stats) => {
-                    // In a real implementation, we'd need a way to update the window state
-                    // For now, we'll log the success
-                    log::info!("Successfully fetched stats: {:?}", stats);
-                },
-                Err(e) => {
-                    log::error!("Failed to fetch stats: {:?}", e);
+            let ctx = context();
+            // For now, we'll use the cached stats since get_stats is commented out
+            let stats_cache = ctx.get_stats_cache();
+            if let Ok(cache) = stats_cache.read() {
+                if let Some(stats) = cache.as_ref() {
+                    log::info!("Successfully retrieved cached stats: {:?}", stats);
+                } else {
+                    log::info!("No cached stats available");
                 }
+            } else {
+                log::error!("Failed to read stats cache");
             }
         });
 
