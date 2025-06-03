@@ -1,6 +1,7 @@
-use std::sync::{Arc, RwLock, Mutex}; // Added Mutex
+use std::sync::{Arc, RwLock, Mutex};
 
 use eframe::egui::{self, RichText};
+use egui_dock::TabIndex; // Ensure TabIndex is imported
 
 use mutant_protocol::KeyDetails;
 use serde::{Deserialize, Serialize};
@@ -461,6 +462,51 @@ impl FsWindow {
                 crate::app::fs::internal_tab::FsInternalTab::FileViewer(_) => false, // File viewers don't count for menu highlighting
             }
         })
+    }
+
+    /// Handles the main "Upload" action from the application menu.
+    /// It will either find an existing PutWindow tab and trigger file selection,
+    /// or create a new PutWindow tab and then trigger file selection.
+    pub fn handle_upload_action(&mut self) {
+        log::info!("FsWindow: Handling upload action, preparing to trigger file selection.");
+        let mut put_window_found_and_triggered = false;
+        let mut found_tab_id: Option<TabIndex> = None;
+
+        // Iterate to find an existing PutWindow tab
+        for (tab_id, tab) in self.internal_dock.iter_all_tabs_mut() {
+            if let super::fs::internal_tab::FsInternalTab::Put(ref mut put_window) = tab {
+                put_window.trigger_file_selection_and_prepare_window();
+                put_window_found_and_triggered = true;
+                found_tab_id = Some(tab_id);
+                log::info!("FsWindow: Found existing PutWindow tab ({:?}), triggered file selection.", tab_id);
+                break;
+            }
+        }
+
+        // If an existing tab was found and triggered, focus it
+        if let Some(tab_id) = found_tab_id {
+            self.internal_dock.set_active_tab(tab_id);
+            log::info!("FsWindow: Focused existing PutWindow tab ({:?}).", tab_id);
+        }
+
+        // If no PutWindow was found, create and add a new one
+        if !put_window_found_and_triggered {
+            log::info!("FsWindow: No existing PutWindow tab found. Creating a new one.");
+            let mut new_put_window = super::put::PutWindow::new(); // Path should be correct
+            new_put_window.trigger_file_selection_and_prepare_window();
+
+            let tab = super::fs::internal_tab::FsInternalTab::Put(new_put_window); // Path should be correct
+
+            if self.internal_dock.iter_all_tabs().next().is_none() {
+                self.internal_dock = egui_dock::DockState::new(vec![tab]);
+                log::info!("FsWindow: Created new dock with PutWindow tab because no tabs existed.");
+            } else {
+                self.internal_dock.main_surface_mut().push_to_focused_leaf(tab);
+                log::info!("FsWindow: Added PutWindow tab to main surface's focused leaf.");
+                // Focusing might require finding the tab_id after adding,
+                // but push_to_focused_leaf often makes it active.
+            }
+        }
     }
 
     /// Build the tree from the current keys

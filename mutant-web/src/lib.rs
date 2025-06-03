@@ -1001,7 +1001,7 @@ impl MyApp {
                     };
 
                     if menu_button(ui, "📤", "Upload", "Upload", upload_open).clicked() {
-                        self.fs_window.write().unwrap().add_put_tab();
+                        self.fs_window.write().unwrap().handle_upload_action();
                     }
 
                     if menu_button(ui, "📊", "Stats", "Stats", stats_open).clicked() {
