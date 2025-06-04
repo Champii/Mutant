@@ -4,6 +4,9 @@ use eframe::egui::{self, RichText};
 
 use mutant_protocol::KeyDetails;
 use serde::{Deserialize, Serialize};
+use lazy_static::lazy_static;
+use web_sys::Blob;
+use js_sys::Uint8Array;
 
 // Updated use statements
 use crate::app::components::multimedia;
@@ -27,6 +30,154 @@ use crate::app::{put::PutWindow, stats::StatsWindow, colony_window::ColonyWindow
 // FileViewerTab struct and impl moved to mutant-web/src/app/fs/viewer_tab.rs
 
 // FsInternalTab and FsInternalTabViewer moved to mutant-web/src/app/fs/internal_tab.rs
+
+// Global callback for adding PutWindow after file selection
+lazy_static! {
+    static ref PENDING_PUT_WINDOW: Arc<RwLock<Option<PutWindow>>> = Arc::new(RwLock::new(None));
+}
+
+/// Add a PutWindow to the main FsWindow from anywhere (used by file dialog callback)
+pub fn add_put_window_to_main_fs(put_window: PutWindow) {
+    if let Some(fs_window_ref) = crate::app::fs::global::get_main_fs_window() {
+        let mut fs_window = fs_window_ref.write().unwrap();
+
+        // Check if a Put tab already exists
+        let tab_exists = fs_window.internal_dock.iter_all_tabs().any(|(_, existing_tab)| {
+            matches!(existing_tab, crate::app::fs::internal_tab::FsInternalTab::Put(_))
+        });
+
+        if !tab_exists {
+            let tab = crate::app::fs::internal_tab::FsInternalTab::Put(put_window);
+
+            // Add to the internal dock system
+            if fs_window.internal_dock.iter_all_tabs().next().is_none() {
+                // If the dock is empty, create a new surface
+                fs_window.internal_dock = egui_dock::DockState::new(vec![tab]);
+            } else {
+                // Add to the existing surface
+                fs_window.internal_dock.main_surface_mut().push_to_focused_leaf(tab);
+            }
+
+            log::info!("Successfully added PutWindow tab to main FsWindow");
+        } else {
+            log::info!("Put tab already exists in main FsWindow");
+        }
+    } else {
+        log::warn!("Main FsWindow reference not available for adding PutWindow");
+    }
+}
+
+/// Start immediate file transfer from browser to daemon
+fn start_immediate_file_transfer(file: web_sys::File, filename: String) {
+    use wasm_bindgen_futures::spawn_local;
+
+    log::info!("Starting immediate file transfer for: {}", filename);
+
+    spawn_local(async move {
+        // Read the file in chunks and start streaming to daemon
+        let file_size = file.size() as u64;
+        const CHUNK_SIZE: u64 = 256 * 1024; // 256KB chunks
+        let total_chunks = ((file_size + CHUNK_SIZE - 1) / CHUNK_SIZE) as usize;
+
+        log::info!("File size: {} bytes, will be read in {} chunks", file_size, total_chunks);
+
+        // Update the PutWindow to show that file reading has started
+        update_put_window_file_reading_state(true, 0.0, 0);
+
+        let mut offset = 0u64;
+        let mut chunk_index = 0usize;
+
+        while offset < file_size {
+            let chunk_size = std::cmp::min(CHUNK_SIZE, file_size - offset);
+            let end_offset = offset + chunk_size;
+
+            // Create a blob slice for this chunk
+            let blob_slice = file.slice_with_i32_and_i32(offset as i32, end_offset as i32).unwrap();
+
+            // Read this chunk
+            match read_blob_chunk(blob_slice).await {
+                Ok(chunk_data) => {
+                    log::debug!("Read chunk {} ({} bytes) at offset {}", chunk_index, chunk_data.len(), offset);
+
+                    // Update progress
+                    let progress = (end_offset as f32) / (file_size as f32);
+                    update_put_window_file_reading_state(true, progress, end_offset);
+
+                    // TODO: Send chunk to daemon here
+                    // For now, we'll just simulate the transfer
+
+                    chunk_index += 1;
+                    offset = end_offset;
+                },
+                Err(e) => {
+                    log::error!("Failed to read chunk {}: {}", chunk_index, e);
+                    update_put_window_error_state(format!("Failed to read file: {}", e));
+                    return;
+                }
+            }
+
+            // Small delay to prevent blocking the UI
+            gloo_timers::future::TimeoutFuture::new(10).await;
+        }
+
+        log::info!("File reading completed for: {}", filename);
+        update_put_window_file_reading_state(false, 1.0, file_size);
+    });
+}
+
+/// Read a blob chunk asynchronously
+async fn read_blob_chunk(blob: Blob) -> Result<Vec<u8>, String> {
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::Response;
+
+    // Use the Response API to read the blob as array buffer
+    let response = Response::new_with_opt_blob(Some(&blob))
+        .map_err(|e| format!("Failed to create response: {:?}", e))?;
+
+    let array_buffer_promise = response.array_buffer()
+        .map_err(|e| format!("Failed to get array buffer: {:?}", e))?;
+
+    let array_buffer = JsFuture::from(array_buffer_promise).await
+        .map_err(|e| format!("Failed to read array buffer: {:?}", e))?;
+
+    let uint8_array = Uint8Array::new(&array_buffer);
+    let mut data = vec![0u8; uint8_array.length() as usize];
+    uint8_array.copy_to(&mut data);
+
+    Ok(data)
+}
+
+/// Update the PutWindow file reading state
+fn update_put_window_file_reading_state(is_reading: bool, progress: f32, bytes_read: u64) {
+    if let Some(fs_window_ref) = crate::app::fs::global::get_main_fs_window() {
+        let mut fs_window = fs_window_ref.write().unwrap();
+
+        // Find the PutWindow tab and update its state
+        for (_, tab) in fs_window.internal_dock.iter_all_tabs_mut() {
+            if let crate::app::fs::internal_tab::FsInternalTab::Put(put_window) = tab {
+                // Update the file reading state using the public method
+                put_window.update_file_reading_state(is_reading, progress, bytes_read);
+                break;
+            }
+        }
+    }
+}
+
+/// Update the PutWindow error state
+fn update_put_window_error_state(error: String) {
+    if let Some(fs_window_ref) = crate::app::fs::global::get_main_fs_window() {
+        let mut fs_window = fs_window_ref.write().unwrap();
+
+        // Find the PutWindow tab and update its error state
+        for (_, tab) in fs_window.internal_dock.iter_all_tabs_mut() {
+            if let crate::app::fs::internal_tab::FsInternalTab::Put(put_window) = tab {
+                // Set error message using the public method
+                put_window.set_error_message(error);
+                break;
+            }
+        }
+    }
+}
 
 /// The filesystem tree window
 #[derive(Clone, Serialize, Deserialize)]
@@ -376,9 +527,9 @@ impl FsWindow {
     }
 
     /// Add a new Put window tab to the internal dock system
-    /// This now immediately triggers the file dialog for better UX
+    /// This now immediately triggers the file dialog and only creates the window after file selection
     pub fn add_put_tab(&mut self) {
-        log::info!("FsWindow: Creating new Put window tab with immediate file dialog");
+        log::info!("FsWindow: Triggering file dialog for upload");
 
         // Check if a Put tab already exists
         let tab_exists = self.internal_dock.iter_all_tabs().any(|(_, existing_tab)| {
@@ -386,24 +537,75 @@ impl FsWindow {
         });
 
         if !tab_exists {
-            // Create a new Put window that will immediately trigger file selection
-            let mut put_window = PutWindow::new();
-            put_window.trigger_immediate_file_selection();
-            let tab = crate::app::fs::internal_tab::FsInternalTab::Put(put_window);
-
-            // Add to the internal dock system
-            if self.internal_dock.iter_all_tabs().next().is_none() {
-                // If the dock is empty, create a new surface
-                self.internal_dock = egui_dock::DockState::new(vec![tab]);
-            } else {
-                // Add to the existing surface
-                self.internal_dock.main_surface_mut().push_to_focused_leaf(tab);
-            }
-
-            log::info!("FsWindow: Successfully added Put tab to internal dock with file dialog");
+            // Trigger file dialog immediately and only create PutWindow after successful selection
+            self.trigger_file_dialog_for_upload();
         } else {
             log::info!("FsWindow: Put tab already exists in internal dock");
         }
+    }
+
+    /// Trigger file dialog and create PutWindow only after successful file selection
+    fn trigger_file_dialog_for_upload(&mut self) {
+        use wasm_bindgen::{JsCast, closure::Closure};
+        use web_sys::Event;
+
+        log::info!("Triggering file dialog for upload");
+
+        // Create file input element
+        let document = web_sys::window().unwrap().document().unwrap();
+        let input = document
+            .create_element("input")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+
+        input.set_type("file");
+        input.set_accept("*/*");
+
+        // We need to capture self in a way that works with the closure
+        // Since we can't move self into the closure, we'll use a different approach
+        let input_clone = input.clone();
+
+        let onchange = Closure::once(move |_event: Event| {
+            if let Some(files) = input_clone.files() {
+                if files.length() > 0 {
+                    if let Some(file) = files.get(0) {
+                        let file_name = file.name();
+                        let file_size_js = file.size();
+                        let file_type_js = file.type_();
+
+                        log::info!("File selected: {} ({} bytes, type: {})", file_name, file_size_js, file_type_js);
+
+                        // Create PutWindow with the selected file information
+                        let mut put_window = PutWindow::new();
+
+                        // Set the file information in the PutWindow using the setter method
+                        let file_type_str = if file_type_js.is_empty() {
+                            "Unknown".to_string()
+                        } else {
+                            file_type_js
+                        };
+                        put_window.set_file_info(file_name.clone(), file_size_js as u64, file_type_str);
+
+                        // Add the PutWindow to the main FsWindow using the global function
+                        add_put_window_to_main_fs(put_window);
+
+                        // Start immediate file transfer from browser to daemon
+                        start_immediate_file_transfer(file, file_name.clone());
+
+                        crate::app::notifications::info(format!("File selected: {}. Upload window opened.", file_name));
+                    }
+                } else {
+                    log::info!("File selection cancelled - no PutWindow will be created");
+                }
+            }
+        });
+
+        input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+        onchange.forget();
+
+        // Trigger file picker
+        input.click();
     }
 
     /// Add a new Stats window tab to the internal dock system

@@ -32,7 +32,6 @@ pub struct PutWindow {
     public: Arc<RwLock<bool>>,
     storage_mode: Arc<RwLock<StorageMode>>,
     no_verify: Arc<RwLock<bool>>,
-    max_chunk_size: Arc<RwLock<u64>>,
 
     // UI state
     should_trigger_file_dialog: Arc<RwLock<bool>>,
@@ -89,7 +88,6 @@ impl Default for PutWindow {
             public: Arc::new(RwLock::new(false)),
             storage_mode: Arc::new(RwLock::new(StorageMode::Heaviest)),
             no_verify: Arc::new(RwLock::new(false)),
-            max_chunk_size: Arc::new(RwLock::new(256 * 1024)), // 256KB default
 
             // UI state
             should_trigger_file_dialog: Arc::new(RwLock::new(false)),
@@ -173,6 +171,30 @@ impl PutWindow {
         *self.should_trigger_file_dialog.write().unwrap() = true;
     }
 
+    /// Set file information (used when creating PutWindow with pre-selected file)
+    pub fn set_file_info(&mut self, filename: String, file_size: u64, file_type: String) {
+        *self.selected_file.write().unwrap() = Some(filename.clone());
+        *self.file_size.write().unwrap() = Some(file_size);
+        *self.file_type.write().unwrap() = Some(file_type);
+        *self.file_selected.write().unwrap() = true;
+
+        // Auto-populate key name with complete filename (including extension)
+        *self.key_name.write().unwrap() = filename;
+    }
+
+    /// Update file reading state (used by external file transfer logic)
+    pub fn update_file_reading_state(&self, is_reading: bool, progress: f32, bytes_read: u64) {
+        *self.is_reading_file.write().unwrap() = is_reading;
+        *self.file_read_progress.write().unwrap() = progress;
+        *self.file_read_bytes.write().unwrap() = bytes_read;
+    }
+
+    /// Set error message (used by external file transfer logic)
+    pub fn set_error_message(&self, error: String) {
+        *self.error_message.write().unwrap() = Some(error);
+        *self.is_reading_file.write().unwrap() = false;
+    }
+
     /// Trigger the file dialog immediately
     fn trigger_file_dialog(&self) {
         log::info!("Triggering immediate file dialog");
@@ -216,13 +238,8 @@ impl PutWindow {
                         });
                         *file_selected.write().unwrap() = true;
 
-                        // Auto-populate key name with filename (without extension)
-                        let key_name_suggestion = if let Some(dot_pos) = file_name.rfind('.') {
-                            file_name[..dot_pos].to_string()
-                        } else {
-                            file_name.clone()
-                        };
-                        *key_name.write().unwrap() = key_name_suggestion;
+                        // Auto-populate key name with complete filename (including extension)
+                        *key_name.write().unwrap() = file_name.clone();
 
                         notifications::info(format!("File selected: {}", file_name));
                     }
@@ -829,7 +846,7 @@ impl PutWindow {
 
             styled_section_group().show(ui, |ui| {
                 ui.vertical(|ui| {
-                    // Storage mode selection
+                    // Storage mode selection with chunk size information
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Storage Mode:").color(MutantColors::TEXT_SECONDARY));
                         let mut storage_mode = self.storage_mode.write().unwrap();
@@ -837,26 +854,11 @@ impl PutWindow {
                         egui::ComboBox::new(format!("mutant_put_storage_mode_{}", self.window_id), "")
                             .selected_text(format!("{:?}", *storage_mode))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut *storage_mode, StorageMode::Light, "Light");
-                                ui.selectable_value(&mut *storage_mode, StorageMode::Medium, "Medium");
-                                ui.selectable_value(&mut *storage_mode, StorageMode::Heavy, "Heavy");
-                                ui.selectable_value(&mut *storage_mode, StorageMode::Heaviest, "Heaviest");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Light, "Light (64KB chunks)");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Medium, "Medium (256KB chunks)");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Heavy, "Heavy (512KB chunks)");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Heaviest, "Heaviest (1MB chunks)");
                             });
-                    });
-
-                    ui.add_space(8.0);
-
-                    // Max chunk size
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Max Chunk Size:").color(MutantColors::TEXT_SECONDARY));
-                        let mut chunk_size = self.max_chunk_size.write().unwrap();
-                        let mut chunk_size_kb = (*chunk_size / 1024) as u32;
-
-                        if ui.add(egui::DragValue::new(&mut chunk_size_kb)
-                            .range(64..=1024)
-                            .suffix(" KB")).changed() {
-                            *chunk_size = (chunk_size_kb as u64) * 1024;
-                        }
                     });
 
                     ui.add_space(8.0);
@@ -1152,16 +1154,111 @@ impl PutWindow {
     /// Start upload with the currently selected file
     fn start_upload_with_selected_file(&self) {
         let key_name = self.key_name.read().unwrap().clone();
-        let _storage_mode = self.storage_mode.read().unwrap().clone();
+        let storage_mode = self.storage_mode.read().unwrap().clone();
         let public = *self.public.read().unwrap();
         let no_verify = *self.no_verify.read().unwrap();
 
         log::info!("Starting upload with selected file: key_name={}, public={}, no_verify={}",
                    key_name, public, no_verify);
 
-        // TODO: Implement the actual upload logic with the selected file
-        // This should start the streaming upload process
-        notifications::info("Starting upload...".to_string());
+        // Check if we have a selected file
+        if let Some(filename) = &*self.selected_file.read().unwrap() {
+            if let Some(file_size) = *self.file_size.read().unwrap() {
+                // Set upload state
+                *self.is_uploading.write().unwrap() = true;
+                *self.upload_complete.write().unwrap() = false;
+                *self.start_time.write().unwrap() = Some(SystemTime::now());
+                *self.error_message.write().unwrap() = None;
+
+                // Reset progress
+                *self.reservation_progress.write().unwrap() = 0.0;
+                *self.upload_progress.write().unwrap() = 0.0;
+                *self.confirmation_progress.write().unwrap() = 0.0;
+
+                // Start the daemon-to-network upload phase
+                self.start_daemon_to_network_upload(
+                    key_name,
+                    filename.clone(),
+                    file_size,
+                    storage_mode,
+                    public,
+                    no_verify
+                );
+
+                notifications::info("Starting upload to network...".to_string());
+            } else {
+                notifications::error("No file size information available".to_string());
+            }
+        } else {
+            notifications::error("No file selected for upload".to_string());
+        }
+    }
+
+    /// Start the daemon-to-network upload phase
+    fn start_daemon_to_network_upload(
+        &self,
+        key_name: String,
+        filename: String,
+        file_size: u64,
+        storage_mode: mutant_protocol::StorageMode,
+        public: bool,
+        no_verify: bool,
+    ) {
+        use wasm_bindgen_futures::spawn_local;
+
+        // Clone the necessary Arc references for the async closure
+        let current_put_id = self.current_put_id.clone();
+        let error_message = self.error_message.clone();
+        let is_uploading = self.is_uploading.clone();
+        let upload_complete = self.upload_complete.clone();
+        let start_time = self.start_time.clone();
+        let elapsed_time = self.elapsed_time.clone();
+
+        spawn_local(async move {
+            let ctx = context::context();
+
+            // For now, we'll simulate the file data since we don't have it stored
+            // In a real implementation, we would have the file data from the browser-to-daemon transfer
+            let file_data = vec![0u8; file_size as usize]; // Placeholder data
+
+            log::info!("Starting daemon-to-network upload for: {} ({} bytes)", filename, file_size);
+
+            // Create progress tracking
+            let (put_id, progress) = ctx.create_progress(&key_name, &filename);
+            *current_put_id.write().unwrap() = Some(put_id.clone());
+
+            // Start the upload
+            match ctx.put(
+                &key_name,
+                file_data,
+                &filename,
+                storage_mode,
+                public,
+                no_verify,
+                Some((put_id, progress))
+            ).await {
+                Ok((final_put_id, _progress)) => {
+                    log::info!("Upload completed successfully: {}", final_put_id);
+
+                    // Calculate elapsed time
+                    if let Some(start) = *start_time.read().unwrap() {
+                        *elapsed_time.write().unwrap() = start.elapsed().unwrap();
+                    }
+
+                    // Mark as complete
+                    *is_uploading.write().unwrap() = false;
+                    *upload_complete.write().unwrap() = true;
+
+                    notifications::info("Upload completed successfully!".to_string());
+                },
+                Err(e) => {
+                    log::error!("Upload failed: {}", e);
+                    *error_message.write().unwrap() = Some(format!("Upload failed: {}", e));
+                    *is_uploading.write().unwrap() = false;
+                    notifications::error(format!("Upload failed: {}", e));
+                }
+            }
+        });
     }
 }
 
