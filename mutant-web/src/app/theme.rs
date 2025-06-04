@@ -195,3 +195,53 @@ pub fn success_progress_bar(progress: f32) -> egui::ProgressBar {
 pub fn info_progress_bar(progress: f32) -> egui::ProgressBar {
     styled_progress_bar(progress, MutantColors::ACCENT_BLUE)
 }
+
+/// Create a styled section group with MutAnt theming
+pub fn styled_section_group() -> egui::Frame {
+    egui::Frame::group(&egui::Style::default())
+        .fill(MutantColors::SURFACE)
+        .stroke(egui::Stroke::new(1.0, MutantColors::BORDER_MEDIUM))
+        .inner_margin(egui::Margin::same(12))
+        .outer_margin(egui::Margin::same(4))
+}
+
+/// Create a prominent info section frame
+pub fn info_section_frame() -> egui::Frame {
+    egui::Frame::group(&egui::Style::default())
+        .fill(MutantColors::BACKGROUND_LIGHT)
+        .stroke(egui::Stroke::new(1.5, MutantColors::ACCENT_BLUE))
+        .inner_margin(egui::Margin::same(16))
+        .outer_margin(egui::Margin::same(6))
+}
+
+/// Create a warning section frame
+pub fn warning_section_frame() -> egui::Frame {
+    egui::Frame::group(&egui::Style::default())
+        .fill(MutantColors::BACKGROUND_LIGHT)
+        .stroke(egui::Stroke::new(1.5, MutantColors::WARNING))
+        .inner_margin(egui::Margin::same(16))
+        .outer_margin(egui::Margin::same(6))
+}
+
+/// Create a section header with consistent styling
+pub fn section_header(text: &str, icon: &str, color: Color32) -> egui::RichText {
+    egui::RichText::new(format!("{} {}", icon, text))
+        .size(16.0)
+        .strong()
+        .color(color)
+}
+
+/// Create a file info display with icon and details
+pub fn file_info_text(filename: &str, size: u64, file_type: &str) -> String {
+    let size_str = if size > 1024 * 1024 * 1024 {
+        format!("{:.1} GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if size > 1024 * 1024 {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    } else if size > 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{} bytes", size)
+    };
+
+    format!("{}\n{} • {}", filename, size_str, file_type)
+}

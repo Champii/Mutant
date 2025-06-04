@@ -376,8 +376,9 @@ impl FsWindow {
     }
 
     /// Add a new Put window tab to the internal dock system
+    /// This now immediately triggers the file dialog for better UX
     pub fn add_put_tab(&mut self) {
-        log::info!("FsWindow: Creating new Put window tab");
+        log::info!("FsWindow: Creating new Put window tab with immediate file dialog");
 
         // Check if a Put tab already exists
         let tab_exists = self.internal_dock.iter_all_tabs().any(|(_, existing_tab)| {
@@ -385,8 +386,9 @@ impl FsWindow {
         });
 
         if !tab_exists {
-            // Create a new Put window
-            let put_window = PutWindow::new();
+            // Create a new Put window that will immediately trigger file selection
+            let mut put_window = PutWindow::new();
+            put_window.trigger_immediate_file_selection();
             let tab = crate::app::fs::internal_tab::FsInternalTab::Put(put_window);
 
             // Add to the internal dock system
@@ -398,7 +400,7 @@ impl FsWindow {
                 self.internal_dock.main_surface_mut().push_to_focused_leaf(tab);
             }
 
-            log::info!("FsWindow: Successfully added Put tab to internal dock");
+            log::info!("FsWindow: Successfully added Put tab to internal dock with file dialog");
         } else {
             log::info!("FsWindow: Put tab already exists in internal dock");
         }

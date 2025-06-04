@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use js_sys::Uint8Array;
 use mutant_protocol::StorageMode;
 use serde::{Deserialize, Serialize};
@@ -11,19 +11,19 @@ use web_sys::{File, FileReader, Event};
 use web_time::{Duration, SystemTime};
 
 use super::Window;
-use super::components::progress::detailed_progress;
+use super::components::progress::{file_transfer_progress, network_upload_progress};
 use super::context;
 use super::notifications;
-use super::theme::{MutantColors, primary_button, success_button};
+use super::theme::{MutantColors, primary_button, secondary_button, styled_section_group, info_section_frame, section_header};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PutWindow {
     // File selection state
     selected_file: Arc<RwLock<Option<String>>>,
     file_size: Arc<RwLock<Option<u64>>>,
+    file_type: Arc<RwLock<Option<String>>>,
     #[serde(skip)] // Skip serializing file data to avoid localStorage quota issues
     file_data: Arc<RwLock<Option<Vec<u8>>>>,
-
 
     // Key name input
     key_name: Arc<RwLock<String>>,
@@ -32,6 +32,12 @@ pub struct PutWindow {
     public: Arc<RwLock<bool>>,
     storage_mode: Arc<RwLock<StorageMode>>,
     no_verify: Arc<RwLock<bool>>,
+    max_chunk_size: Arc<RwLock<u64>>,
+
+    // UI state
+    should_trigger_file_dialog: Arc<RwLock<bool>>,
+    advanced_settings_open: Arc<RwLock<bool>>,
+    file_selected: Arc<RwLock<bool>>,
 
     // File reading progress (Phase 1: File-to-Web)
     is_reading_file: Arc<RwLock<bool>>,
@@ -77,11 +83,18 @@ impl Default for PutWindow {
         Self {
             selected_file: Arc::new(RwLock::new(None)),
             file_size: Arc::new(RwLock::new(None)),
+            file_type: Arc::new(RwLock::new(None)),
             file_data: Arc::new(RwLock::new(None)),
             key_name: Arc::new(RwLock::new(String::new())),
             public: Arc::new(RwLock::new(false)),
             storage_mode: Arc::new(RwLock::new(StorageMode::Heaviest)),
             no_verify: Arc::new(RwLock::new(false)),
+            max_chunk_size: Arc::new(RwLock::new(256 * 1024)), // 256KB default
+
+            // UI state
+            should_trigger_file_dialog: Arc::new(RwLock::new(false)),
+            advanced_settings_open: Arc::new(RwLock::new(false)),
+            file_selected: Arc::new(RwLock::new(false)),
 
             // File reading progress (Phase 1)
             is_reading_file: Arc::new(RwLock::new(false)),
@@ -123,6 +136,12 @@ impl Window for PutWindow {
         // Log that we're drawing the window
         log::debug!("Drawing PutWindow");
 
+        // Check if we should trigger the file dialog immediately
+        if *self.should_trigger_file_dialog.read().unwrap() {
+            *self.should_trigger_file_dialog.write().unwrap() = false;
+            self.trigger_file_dialog();
+        }
+
         // If we're uploading, check the progress before drawing the form
         // This ensures we have the latest progress values when drawing
         if *self.is_uploading.read().unwrap() && !*self.upload_complete.read().unwrap() {
@@ -135,7 +154,7 @@ impl Window for PutWindow {
         }
 
         // Draw the form with the updated progress values
-        self.draw_upload_form(ui);
+        self.draw_modern_upload_form(ui);
 
         // Request a repaint to ensure we update frequently
         // This is crucial for smooth progress bar updates
@@ -147,6 +166,77 @@ impl Window for PutWindow {
 impl PutWindow {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Trigger immediate file selection when the window is created
+    pub fn trigger_immediate_file_selection(&mut self) {
+        *self.should_trigger_file_dialog.write().unwrap() = true;
+    }
+
+    /// Trigger the file dialog immediately
+    fn trigger_file_dialog(&self) {
+        log::info!("Triggering immediate file dialog");
+
+        // Create file input element
+        let document = web_sys::window().unwrap().document().unwrap();
+        let input = document
+            .create_element("input")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+
+        input.set_type("file");
+        input.set_accept("*/*");
+
+        // Clone references for the closure
+        let selected_file = self.selected_file.clone();
+        let file_size = self.file_size.clone();
+        let file_type = self.file_type.clone();
+        let file_selected = self.file_selected.clone();
+        let key_name = self.key_name.clone();
+        let input_clone = input.clone();
+
+        let onchange = Closure::once(move |_event: Event| {
+            if let Some(files) = input_clone.files() {
+                if files.length() > 0 {
+                    if let Some(file) = files.get(0) {
+                        let file_name = file.name();
+                        let file_size_js = file.size();
+                        let file_type_js = file.type_();
+
+                        log::info!("File selected: {} ({} bytes, type: {})", file_name, file_size_js, file_type_js);
+
+                        // Update state with selected file info
+                        *selected_file.write().unwrap() = Some(file_name.clone());
+                        *file_size.write().unwrap() = Some(file_size_js as u64);
+                        *file_type.write().unwrap() = Some(if file_type_js.is_empty() {
+                            "Unknown".to_string()
+                        } else {
+                            file_type_js
+                        });
+                        *file_selected.write().unwrap() = true;
+
+                        // Auto-populate key name with filename (without extension)
+                        let key_name_suggestion = if let Some(dot_pos) = file_name.rfind('.') {
+                            file_name[..dot_pos].to_string()
+                        } else {
+                            file_name.clone()
+                        };
+                        *key_name.write().unwrap() = key_name_suggestion;
+
+                        notifications::info(format!("File selected: {}", file_name));
+                    }
+                } else {
+                    log::info!("File selection cancelled");
+                }
+            }
+        });
+
+        input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+        onchange.forget();
+
+        // Trigger file picker
+        input.click();
     }
 
     fn check_progress(&self) {
@@ -596,284 +686,482 @@ impl PutWindow {
         *self.current_put_id.write().unwrap() = None;
     }
 
-    fn draw_upload_form(&mut self, ui: &mut egui::Ui) {
+    /// Modern redesigned upload form with professional styling
+    fn draw_modern_upload_form(&mut self, ui: &mut egui::Ui) {
         let is_uploading = *self.is_uploading.read().unwrap();
         let upload_complete = *self.upload_complete.read().unwrap();
         let is_reading_file = *self.is_reading_file.read().unwrap();
+        let file_selected = *self.file_selected.read().unwrap();
 
         // Check if we're in any kind of processing state
         let is_processing = is_uploading || is_reading_file;
 
         if !is_processing && !upload_complete {
-            // File selection section
-            ui.heading(RichText::new("📤 Upload File").size(20.0).color(MutantColors::TEXT_PRIMARY));
-            ui.add_space(15.0);
-
-            // Key name input with styled frame
-            ui.group(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Key Name:").color(MutantColors::TEXT_PRIMARY));
-                    ui.add_space(5.0);
-                    let mut key_name = self.key_name.write().unwrap();
-                    ui.text_edit_singleline(&mut *key_name);
-                });
+            // Main header
+            ui.horizontal(|ui| {
+                ui.label(section_header("Upload File", "📤", MutantColors::ACCENT_ORANGE));
             });
+            ui.add_space(12.0);
 
-            ui.add_space(10.0);
+            // File Information Section (only show if file is selected)
+            if file_selected {
+                self.draw_file_info_section(ui);
+                ui.add_space(12.0);
+            }
 
-            // Show selected file info if any (from previous upload)
-            if let Some(filename) = &*self.selected_file.read().unwrap() {
-                ui.group(|ui| {
+            // Key Name Input Section
+            self.draw_key_name_section(ui);
+            ui.add_space(12.0);
+
+            // Upload Mode Selection (Public/Private)
+            self.draw_upload_mode_section(ui);
+            ui.add_space(12.0);
+
+            // Advanced Settings (Collapsible)
+            self.draw_advanced_settings_section(ui);
+            ui.add_space(12.0);
+
+            // Action Buttons Section
+            self.draw_action_buttons_section(ui);
+
+            // Error Display
+            self.draw_error_section(ui);
+        } else if is_reading_file {
+            // Modern file reading progress
+            self.draw_file_reading_progress(ui);
+        } else if is_uploading {
+            // Modern upload progress with two phases
+            self.draw_upload_progress(ui);
+
+        } else if upload_complete {
+            // Modern upload completion section
+            self.draw_upload_complete_section(ui);
+        }
+    }
+
+    /// Draw the file information section with modern styling
+    fn draw_file_info_section(&self, ui: &mut egui::Ui) {
+        if let (Some(filename), Some(size), Some(file_type)) = (
+            &*self.selected_file.read().unwrap(),
+            *self.file_size.read().unwrap(),
+            &*self.file_type.read().unwrap()
+        ) {
+            info_section_frame().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // File icon based on type
+                    let (icon, icon_color) = self.get_file_icon_and_color(filename);
+                    ui.label(RichText::new(icon).size(24.0).color(icon_color));
+
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Last Selected File:").color(MutantColors::TEXT_SECONDARY));
-                        ui.label(RichText::new(filename).color(MutantColors::ACCENT_BLUE));
+                        // Filename
+                        ui.label(RichText::new(filename)
+                            .size(16.0)
+                            .strong()
+                            .color(MutantColors::TEXT_PRIMARY));
 
-                        if let Some(size) = *self.file_size.read().unwrap() {
-                            ui.label(RichText::new(format!("Size: {} bytes", size)).color(MutantColors::TEXT_MUTED));
-                        }
+                        // File details
+                        let size_str = format_bytes(size);
+                        ui.label(RichText::new(format!("{} • {}", size_str, file_type))
+                            .size(12.0)
+                            .color(MutantColors::TEXT_SECONDARY));
                     });
                 });
-                ui.add_space(10.0);
-            }
+            });
+        }
+    }
 
-            ui.add_space(10.0);
+    /// Draw the key name input section
+    fn draw_key_name_section(&self, ui: &mut egui::Ui) {
+        styled_section_group().show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(section_header("Key Name", "🔑", MutantColors::ACCENT_BLUE));
+                ui.add_space(8.0);
 
-            // Configuration options
-            ui.collapsing("Upload Options", |ui| {
-                // Public checkbox
+                let mut key_name = self.key_name.write().unwrap();
+                ui.text_edit_singleline(&mut *key_name);
+
+                ui.add_space(4.0);
+                ui.label(RichText::new("Choose a unique name for your file")
+                    .size(11.0)
+                    .color(MutantColors::TEXT_MUTED));
+            });
+        });
+    }
+
+    /// Draw the upload mode selection (Public/Private)
+    fn draw_upload_mode_section(&self, ui: &mut egui::Ui) {
+        styled_section_group().show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(section_header("Upload Mode", "🌐", MutantColors::ACCENT_GREEN));
+                ui.add_space(8.0);
+
+                let mut public = self.public.write().unwrap();
+
                 ui.horizontal(|ui| {
-                    let mut public = self.public.write().unwrap();
-                    ui.checkbox(&mut *public, "Public");
-                    ui.label("Make this file publicly accessible");
+                    if ui.radio_value(&mut *public, false, "Private").clicked() {
+                        log::info!("Upload mode set to Private");
+                    }
+                    ui.label(RichText::new("Only you can access this file")
+                        .size(11.0)
+                        .color(MutantColors::TEXT_MUTED));
                 });
 
-                // Storage mode selection
-                ui.horizontal(|ui| {
-                    ui.label("Storage Mode:");
-                    let mut storage_mode = self.storage_mode.write().unwrap();
+                ui.add_space(4.0);
 
-                    egui::ComboBox::new(format!("mutant_put_storage_mode_{}", self.window_id), "")
-                        .selected_text(format!("{:?}", *storage_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut *storage_mode, StorageMode::Light, "Light");
-                            ui.selectable_value(&mut *storage_mode, StorageMode::Medium, "Medium");
-                            ui.selectable_value(&mut *storage_mode, StorageMode::Heavy, "Heavy");
-                            ui.selectable_value(&mut *storage_mode, StorageMode::Heaviest, "Heaviest");
-                        });
-                });
-
-                // No verify checkbox
                 ui.horizontal(|ui| {
-                    let mut no_verify = self.no_verify.write().unwrap();
-                    ui.checkbox(&mut *no_verify, "Skip Verification");
-                    ui.label("Skip verification of uploaded data (faster but less safe)");
+                    if ui.radio_value(&mut *public, true, "Public").clicked() {
+                        log::info!("Upload mode set to Public");
+                    }
+                    ui.label(RichText::new("Anyone with the address can access this file")
+                        .size(11.0)
+                        .color(MutantColors::TEXT_MUTED));
                 });
             });
+        });
+    }
 
-            ui.add_space(10.0);
+    /// Draw the advanced settings section (collapsible)
+    fn draw_advanced_settings_section(&self, ui: &mut egui::Ui) {
+        let mut advanced_open = self.advanced_settings_open.write().unwrap();
 
-            // Upload button - now triggers file selection and upload
-            let can_upload = !self.key_name.read().unwrap().is_empty();
+        ui.collapsing("⚙️ Advanced Settings", |ui| {
+            *advanced_open = true;
 
-            ui.add_space(15.0);
-            ui.horizontal(|ui| {
-                if ui.add_enabled(can_upload, primary_button("📁 Select File and Upload")).clicked() {
-                    self.start_upload();
+            styled_section_group().show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // Storage mode selection
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Storage Mode:").color(MutantColors::TEXT_SECONDARY));
+                        let mut storage_mode = self.storage_mode.write().unwrap();
+
+                        egui::ComboBox::new(format!("mutant_put_storage_mode_{}", self.window_id), "")
+                            .selected_text(format!("{:?}", *storage_mode))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Light, "Light");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Medium, "Medium");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Heavy, "Heavy");
+                                ui.selectable_value(&mut *storage_mode, StorageMode::Heaviest, "Heaviest");
+                            });
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Max chunk size
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Max Chunk Size:").color(MutantColors::TEXT_SECONDARY));
+                        let mut chunk_size = self.max_chunk_size.write().unwrap();
+                        let mut chunk_size_kb = (*chunk_size / 1024) as u32;
+
+                        if ui.add(egui::DragValue::new(&mut chunk_size_kb)
+                            .range(64..=1024)
+                            .suffix(" KB")).changed() {
+                            *chunk_size = (chunk_size_kb as u64) * 1024;
+                        }
+                    });
+
+                    ui.add_space(8.0);
+
+                    // No verify checkbox
+                    ui.horizontal(|ui| {
+                        let mut no_verify = self.no_verify.write().unwrap();
+                        ui.checkbox(&mut *no_verify, "Skip Verification");
+                        ui.label(RichText::new("Faster upload but less safe")
+                            .size(11.0)
+                            .color(MutantColors::TEXT_MUTED));
+                    });
+                });
+            });
+        });
+
+        if !ui.ctx().memory(|m| m.is_popup_open(egui::Id::new("⚙️ Advanced Settings"))) {
+            *advanced_open = false;
+        }
+    }
+
+    /// Draw the action buttons section
+    fn draw_action_buttons_section(&self, ui: &mut egui::Ui) {
+        let file_selected = *self.file_selected.read().unwrap();
+        let key_name_valid = !self.key_name.read().unwrap().is_empty();
+
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            if file_selected && key_name_valid {
+                // File is selected and key name is valid - show upload button
+                if ui.add(primary_button("🚀 Start Upload")).clicked() {
+                    self.start_upload_with_selected_file();
                 }
-            });
-
-            if !can_upload {
-                ui.add_space(5.0);
-                ui.label(RichText::new("⚠ Please enter a key name").color(MutantColors::WARNING));
+            } else if !file_selected {
+                // No file selected - show file selection button
+                if ui.add(primary_button("📁 Select File")).clicked() {
+                    self.trigger_file_dialog();
+                }
+            } else {
+                // File selected but no key name - show disabled upload button
+                ui.add_enabled(false, primary_button("🚀 Start Upload"));
             }
 
-            // Show error message if any
-            if let Some(error) = &*self.error_message.read().unwrap() {
-                ui.add_space(10.0);
-                ui.group(|ui| {
-                    ui.label(RichText::new(format!("❌ Error: {}", error)).color(MutantColors::ERROR));
+            // Reset/Clear button
+            if file_selected {
+                ui.add_space(8.0);
+                if ui.add(secondary_button("🗑 Clear")).clicked() {
+                    self.reset_file_selection();
+                }
+            }
+        });
+
+        // Validation messages
+        if file_selected && !key_name_valid {
+            ui.add_space(6.0);
+            ui.label(RichText::new("⚠ Please enter a key name to continue")
+                .color(MutantColors::WARNING));
+        }
+    }
+
+    /// Draw error messages if any
+    fn draw_error_section(&self, ui: &mut egui::Ui) {
+        if let Some(error) = &*self.error_message.read().unwrap() {
+            ui.add_space(12.0);
+            info_section_frame().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("❌").size(16.0).color(MutantColors::ERROR));
+                    ui.label(RichText::new(error)
+                        .color(MutantColors::ERROR)
+                        .strong());
                 });
-            }
-        } else if is_reading_file {
-            // File reading progress section
-            ui.heading("Reading File");
-            ui.add_space(10.0);
+            });
+        }
+    }
 
-            let file_name = self.selected_file.read().unwrap().clone().unwrap_or_default();
-            ui.label(format!("Reading: {}", file_name));
+    /// Draw file reading progress with modern styling
+    fn draw_file_reading_progress(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.label(section_header("Reading File", "📖", MutantColors::ACCENT_BLUE));
+            ui.add_space(16.0);
 
-            ui.add_space(5.0);
-
-            // File reading progress
-            let file_read_progress = *self.file_read_progress.read().unwrap();
-            let file_read_bytes = *self.file_read_bytes.read().unwrap();
-            let file_size = self.file_size.read().unwrap().unwrap_or(0);
-
-            ui.label("Loading file into memory:");
-            ui.add(detailed_progress(
-                file_read_progress,
-                file_read_bytes as usize,
-                file_size as usize,
-                "Reading...".to_string()
-            ));
-
-            ui.add_space(10.0);
-            ui.label(RichText::new("Please wait while the file is being loaded...").color(Color32::GRAY));
-        } else if is_uploading {
-            // Progress section
-            ui.heading("Upload Progress");
-            ui.add_space(10.0);
-
-            let key_name = self.key_name.read().unwrap();
-            ui.label(format!("Uploading: {}", *key_name));
-
-            ui.add_space(5.0);
-
-            // Check if we're in daemon upload phase
-            let is_uploading_to_daemon = *self.is_uploading_to_daemon.read().unwrap();
-            if is_uploading_to_daemon {
-                // Show daemon upload progress
-                let daemon_upload_progress = *self.daemon_upload_progress.read().unwrap();
-                let daemon_upload_bytes = *self.daemon_upload_bytes.read().unwrap();
+            if let Some(filename) = &*self.selected_file.read().unwrap() {
+                let file_read_progress = *self.file_read_progress.read().unwrap();
+                let file_read_bytes = *self.file_read_bytes.read().unwrap();
                 let file_size = self.file_size.read().unwrap().unwrap_or(0);
 
-                ui.label("Sending to daemon:");
-                ui.add(detailed_progress(
-                    daemon_upload_progress,
-                    daemon_upload_bytes as usize,
-                    file_size as usize,
-                    "Uploading...".to_string()
-                ));
+                // Use the modern file transfer progress component
+                file_transfer_progress(ui, file_read_progress, file_read_bytes, file_size, filename);
 
-                ui.add_space(5.0);
+                ui.add_space(12.0);
+                ui.label(RichText::new("Please wait while the file is being loaded...")
+                    .color(MutantColors::TEXT_MUTED));
+            }
+        });
+    }
+
+    /// Draw upload progress with modern two-phase display
+    fn draw_upload_progress(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.label(section_header("Upload Progress", "🚀", MutantColors::ACCENT_ORANGE));
+            ui.add_space(16.0);
+
+            // Phase 1: Browser → Daemon (if active)
+            let is_uploading_to_daemon = *self.is_uploading_to_daemon.read().unwrap();
+            if is_uploading_to_daemon {
+                if let Some(filename) = &*self.selected_file.read().unwrap() {
+                    let daemon_upload_progress = *self.daemon_upload_progress.read().unwrap();
+                    let daemon_upload_bytes = *self.daemon_upload_bytes.read().unwrap();
+                    let file_size = self.file_size.read().unwrap().unwrap_or(0);
+
+                    ui.label(RichText::new("Phase 1: Transferring to Daemon")
+                        .size(14.0)
+                        .color(MutantColors::TEXT_PRIMARY));
+                    ui.add_space(8.0);
+
+                    file_transfer_progress(ui, daemon_upload_progress, daemon_upload_bytes, file_size, filename);
+                    ui.add_space(16.0);
+                }
             }
 
-            // Calculate elapsed time
-            let elapsed = if let Some(start_time) = *self.start_time.read().unwrap() {
-                start_time.elapsed().unwrap()
-            } else {
-                *self.elapsed_time.read().unwrap()
-            };
-
-            let elapsed_str = format_elapsed_time(elapsed);
-
-            // Get total chunks and current progress
-            let total_chunks = *self.total_chunks.read().unwrap();
-            let chunks_to_reserve = *self.chunks_to_reserve.read().unwrap();
-
-            // Calculate current counts based on progress
-            let reservation_progress = *self.reservation_progress.read().unwrap();
-            let upload_progress = *self.upload_progress.read().unwrap();
-            let confirmation_progress = *self.confirmation_progress.read().unwrap();
-
-            // Get the latest progress values directly from the context
-            let (reservation_progress, upload_progress, confirmation_progress, total_chunks) = {
+            // Phase 2: Daemon → Network (if active)
+            let is_uploading = *self.is_uploading.read().unwrap();
+            if is_uploading && !is_uploading_to_daemon {
+                // Get progress data from context
                 if let Some(put_id) = &*self.current_put_id.read().unwrap() {
                     let ctx = context::context();
                     if let Some(progress) = ctx.get_put_progress(put_id) {
                         let progress_guard = progress.read().unwrap();
                         if let Some(op) = progress_guard.operation.get("put") {
-                            // Calculate progress percentages
-                            let res_progress = if op.total_pads > 0 {
-                                op.nb_reserved as f32 / op.total_pads as f32
+                            let total_chunks = op.total_pads;
+
+                            let reservation_progress = if total_chunks > 0 {
+                                op.nb_reserved as f32 / total_chunks as f32
+                            } else { 0.0 };
+
+                            let upload_progress = if total_chunks > 0 {
+                                op.nb_written as f32 / total_chunks as f32
+                            } else { 0.0 };
+
+                            let confirmation_progress = if total_chunks > 0 {
+                                op.nb_confirmed as f32 / total_chunks as f32
+                            } else { 0.0 };
+
+                            // Calculate elapsed time
+                            let elapsed = if let Some(start_time) = *self.start_time.read().unwrap() {
+                                start_time.elapsed().unwrap()
                             } else {
-                                0.0
+                                *self.elapsed_time.read().unwrap()
                             };
+                            let elapsed_str = format_elapsed_time(elapsed);
 
-                            let up_progress = if op.total_pads > 0 {
-                                op.nb_written as f32 / op.total_pads as f32
-                            } else {
-                                0.0
-                            };
+                            ui.label(RichText::new("Phase 2: Uploading to Network")
+                                .size(14.0)
+                                .color(MutantColors::TEXT_PRIMARY));
+                            ui.add_space(8.0);
 
-                            let conf_progress = if op.total_pads > 0 {
-                                op.nb_confirmed as f32 / op.total_pads as f32
-                            } else {
-                                0.0
-                            };
-
-                            // Update the stored progress values
-                            *self.reservation_progress.write().unwrap() = res_progress;
-                            *self.upload_progress.write().unwrap() = up_progress;
-                            *self.confirmation_progress.write().unwrap() = conf_progress;
-                            *self.total_chunks.write().unwrap() = op.total_pads;
-
-                            (res_progress, up_progress, conf_progress, op.total_pads)
-                        } else {
-                            (reservation_progress, upload_progress, confirmation_progress, total_chunks)
+                            // Use the modern network upload progress component
+                            network_upload_progress(
+                                ui,
+                                reservation_progress, op.nb_reserved,
+                                upload_progress, op.nb_written,
+                                confirmation_progress, op.nb_confirmed,
+                                total_chunks, elapsed_str
+                            );
                         }
-                    } else {
-                        (reservation_progress, upload_progress, confirmation_progress, total_chunks)
                     }
-                } else {
-                    (reservation_progress, upload_progress, confirmation_progress, total_chunks)
                 }
-            };
 
-            // Calculate current counts for each stage
-            let reserved_count = if chunks_to_reserve > 0 {
-                (reservation_progress * total_chunks as f32) as usize
-            } else {
-                (reservation_progress * total_chunks as f32) as usize
-            };
+                ui.add_space(16.0);
 
-            let uploaded_count = (upload_progress * total_chunks as f32) as usize;
-            let confirmed_count = (confirmation_progress * total_chunks as f32) as usize;
-
-            log::debug!("Drawing progress bars: reservation={:.2}%, upload={:.2}%, confirmation={:.2}%",
-                reservation_progress * 100.0, upload_progress * 100.0, confirmation_progress * 100.0);
-
-            // Reservation progress bar
-            ui.label("Reserving pads:");
-            ui.add(detailed_progress(reservation_progress, reserved_count, total_chunks, elapsed_str.clone()));
-
-            ui.add_space(5.0);
-
-            // Upload progress bar
-            ui.label("Uploading pads:");
-            ui.add(detailed_progress(upload_progress, uploaded_count, total_chunks, elapsed_str.clone()));
-
-            ui.add_space(5.0);
-
-            // Confirmation progress bar
-            ui.label("Confirming pads:");
-            ui.add(detailed_progress(confirmation_progress, confirmed_count, total_chunks, elapsed_str));
-
-            // Cancel button
-            ui.add_space(10.0);
-            if ui.button("Cancel").clicked() {
-                // TODO: Implement cancellation
-                *self.is_uploading.write().unwrap() = false;
-                notifications::warning("Upload cancelled".to_string());
+                // Cancel button
+                if ui.add(secondary_button("❌ Cancel Upload")).clicked() {
+                    *self.is_uploading.write().unwrap() = false;
+                    notifications::warning("Upload cancelled".to_string());
+                }
             }
-        } else if upload_complete {
-            // Upload complete section
-            ui.heading("Upload Complete");
-            ui.add_space(10.0);
+        });
+    }
 
-            let key_name = self.key_name.read().unwrap();
-            ui.label(format!("Successfully uploaded: {}", *key_name));
+    /// Draw upload completion section with modern styling
+    fn draw_upload_complete_section(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.label(section_header("Upload Complete", "✅", MutantColors::SUCCESS));
+            ui.add_space(16.0);
 
-            // Show elapsed time
-            let elapsed = *self.elapsed_time.read().unwrap();
-            ui.label(format!("Time taken: {}", format_elapsed_time(elapsed)));
+            styled_section_group().show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let key_name = self.key_name.read().unwrap();
+                    ui.label(RichText::new(format!("Successfully uploaded: {}", *key_name))
+                        .size(16.0)
+                        .strong()
+                        .color(MutantColors::TEXT_PRIMARY));
 
-            // Show public address if available
-            if let Some(address) = &*self.public_address.read().unwrap() {
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.label("Public index address:");
-                    ui.text_edit_singleline(&mut address.clone());
+                    ui.add_space(8.0);
+
+                    // Show elapsed time
+                    let elapsed = *self.elapsed_time.read().unwrap();
+                    ui.label(RichText::new(format!("Time taken: {}", format_elapsed_time(elapsed)))
+                        .color(MutantColors::TEXT_SECONDARY));
+
+                    // Show public address if available
+                    if let Some(address) = &*self.public_address.read().unwrap() {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new("Public Address:")
+                            .strong()
+                            .color(MutantColors::ACCENT_GREEN));
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut address.clone());
+                            if ui.button("📋").on_hover_text("Copy to clipboard").clicked() {
+                                ui.ctx().copy_text(address.clone());
+                                notifications::info("Address copied to clipboard".to_string());
+                            }
+                        });
+                    }
                 });
-            }
+            });
 
-            ui.add_space(15.0);
+            ui.add_space(20.0);
+
             ui.horizontal(|ui| {
-                if ui.add(success_button("📤 Upload Another File")).clicked() {
+                if ui.add(primary_button("📤 Upload Another File")).clicked() {
                     self.reset();
                 }
+
+                ui.add_space(8.0);
+
+                if ui.add(secondary_button("🗂 View in Files")).clicked() {
+                    // TODO: Switch to files tab and highlight the uploaded file
+                    notifications::info("Switching to Files view...".to_string());
+                }
             });
+        });
+    }
+
+    /// Get file icon and color based on filename extension (similar to fs-tree)
+    fn get_file_icon_and_color(&self, filename: &str) -> (&'static str, egui::Color32) {
+        if let Some(extension) = std::path::Path::new(filename).extension() {
+            match extension.to_string_lossy().to_lowercase().as_str() {
+                // Code files
+                "rs" | "rust" => ("🦀", MutantColors::ACCENT_ORANGE),
+                "js" | "ts" | "jsx" | "tsx" => ("📜", MutantColors::WARNING),
+                "py" | "python" => ("🐍", MutantColors::ACCENT_GREEN),
+                "java" | "class" => ("☕", MutantColors::ACCENT_ORANGE),
+                "cpp" | "c" | "cc" | "cxx" | "h" | "hpp" => ("⚙️", MutantColors::ACCENT_BLUE),
+                "go" => ("🐹", MutantColors::ACCENT_CYAN),
+                "html" | "htm" => ("🌐", MutantColors::ACCENT_ORANGE),
+                "css" | "scss" | "sass" | "less" => ("🎨", MutantColors::ACCENT_BLUE),
+                "json" | "yaml" | "yml" | "toml" | "xml" => ("📋", MutantColors::TEXT_MUTED),
+
+                // Images
+                "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" => ("📷", MutantColors::ACCENT_GREEN),
+
+                // Videos
+                "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" => ("🎬", MutantColors::ACCENT_PURPLE),
+
+                // Audio
+                "mp3" | "wav" | "flac" | "ogg" | "aac" | "m4a" => ("🎵", MutantColors::ACCENT_CYAN),
+
+                // Archives
+                "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => ("📦", MutantColors::ACCENT_ORANGE),
+
+                // Documents
+                "pdf" => ("📕", MutantColors::ERROR),
+                "doc" | "docx" => ("📘", MutantColors::ACCENT_BLUE),
+                "xls" | "xlsx" => ("📗", MutantColors::ACCENT_GREEN),
+                "ppt" | "pptx" => ("📙", MutantColors::WARNING),
+                "txt" | "md" | "readme" => ("📄", MutantColors::TEXT_MUTED),
+
+                // Executables
+                "exe" | "msi" | "deb" | "rpm" | "dmg" | "app" => ("⚡", MutantColors::WARNING),
+
+                _ => ("📄", MutantColors::TEXT_MUTED)
+            }
+        } else {
+            ("📄", MutantColors::TEXT_MUTED)
         }
+    }
+
+    /// Reset file selection state
+    fn reset_file_selection(&self) {
+        *self.selected_file.write().unwrap() = None;
+        *self.file_size.write().unwrap() = None;
+        *self.file_type.write().unwrap() = None;
+        *self.file_selected.write().unwrap() = false;
+        *self.key_name.write().unwrap() = String::new();
+
+        notifications::info("File selection cleared".to_string());
+    }
+
+    /// Start upload with the currently selected file
+    fn start_upload_with_selected_file(&self) {
+        let key_name = self.key_name.read().unwrap().clone();
+        let _storage_mode = self.storage_mode.read().unwrap().clone();
+        let public = *self.public.read().unwrap();
+        let no_verify = *self.no_verify.read().unwrap();
+
+        log::info!("Starting upload with selected file: key_name={}, public={}, no_verify={}",
+                   key_name, public, no_verify);
+
+        // TODO: Implement the actual upload logic with the selected file
+        // This should start the streaming upload process
+        notifications::info("Starting upload...".to_string());
     }
 }
 
@@ -892,5 +1180,18 @@ fn format_elapsed_time(duration: Duration) -> String {
         let minutes = (total_seconds % 3600) / 60;
         let seconds = total_seconds % 60;
         format!("{}h {}m {}s", hours, minutes, seconds)
+    }
+}
+
+// Helper function to format bytes in human-readable format
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
     }
 }
