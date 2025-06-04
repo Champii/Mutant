@@ -162,7 +162,8 @@ impl TreeNode {
                 let header_id = format!("mutant_fs_{}dir_{}_{}", window_id, self.path, self.expanded);
                 let header = egui::CollapsingHeader::new(text)
                     .id_salt(header_id)
-                    .default_open(self.expanded);
+                    .default_open(self.expanded)
+                    .show_background(false); // Remove background to have more control over positioning
 
                 let mut child_view_details = None;
                 let mut child_download_details = None;
@@ -345,8 +346,12 @@ impl TreeNode {
                     drag_drop_result = child_drag_drop_result;
                 }
             } else {
-                // File node - add extra space to align with folder names (accounting for arrow)
-                ui.add_space(18.0); // Add space to compensate for the arrow in front of folders
+                // File node - calculate proper alignment with folder expand arrows
+                // The expand arrow in CollapsingHeader typically takes about 16-20 pixels
+                // We need to align the file icon with the folder icon, which comes after the arrow
+                let expand_arrow_width = 16.0; // Standard width for expand arrow
+                let icon_spacing = 4.0; // Small spacing after arrow before icon
+                ui.add_space(expand_arrow_width + icon_spacing);
 
                 let details = self.key_details.as_ref().unwrap();
                 let is_selected = selected_path.map_or(false, |path| path == &details.key);
