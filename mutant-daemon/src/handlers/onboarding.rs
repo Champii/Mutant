@@ -10,6 +10,7 @@ use mutant_protocol::{
     OnboardingStatusRequest, OnboardingStatusResponse,
     SetCredentialsRequest, SetCredentialsResponse,
     InitializeColonyRequest, InitializeColonyResponse,
+    RestartDaemonRequest, RestartDaemonResponse,
     Response, ColonyEvent, ColonyProgressResponse,
 };
 
@@ -253,4 +254,23 @@ fn update_env_var(content: &str, var_name: &str, var_value: &str) -> String {
     }
     
     lines.join("\n")
+}
+
+/// Handle daemon restart request
+pub(crate) async fn handle_restart_daemon(
+    _req: RestartDaemonRequest,
+    update_tx: UpdateSender,
+) -> Result<(), DaemonError> {
+    log::info!("Handling RestartDaemon request");
+
+    // Send success response first
+    let response = RestartDaemonResponse {
+        success: true,
+        error: None,
+    };
+    let _ = update_tx.send(Response::RestartDaemon(response));
+
+    // Exit the daemon process - the system should restart it
+    log::info!("Daemon restart requested - exiting process");
+    std::process::exit(0);
 }

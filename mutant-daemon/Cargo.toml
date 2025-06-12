@@ -11,6 +11,7 @@ anyhow = "1.0"
 autonomi = "0.4.6"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.4", features = ["derive"] }
+dotenvy = "0.15"
 #colonylib = { path = "../../colonylib" }
 colonylib = { git = "https://github.com/zettawatt/colonylib", branch = "main", commit = "89bc7b5" }
 dialoguer = "0.11"

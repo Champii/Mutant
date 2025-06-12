@@ -14,7 +14,7 @@ use super::system_operations::{handle_health_check, handle_purge, handle_sync};
 use super::task_management::{handle_list_tasks, handle_query_task, handle_stop_task};
 use super::colony::{handle_search, handle_index_content, handle_get_metadata, handle_add_contact, handle_list_content, handle_sync_contacts, handle_get_user_contact, handle_list_contacts};
 use super::filesystem::{handle_list_directory, handle_get_file_info};
-use super::onboarding::{handle_onboarding_status, handle_set_credentials, handle_initialize_colony};
+use super::onboarding::{handle_onboarding_status, handle_set_credentials, handle_initialize_colony, handle_restart_daemon};
 
 pub(crate) async fn handle_request(
     request: Request,
@@ -91,6 +91,9 @@ pub(crate) async fn handle_request(
         }
         Request::InitializeColony(initialize_colony_req) => {
             handle_initialize_colony(initialize_colony_req, update_tx, mutant).await?
+        }
+        Request::RestartDaemon(restart_daemon_req) => {
+            handle_restart_daemon(restart_daemon_req, update_tx).await?
         }
     }
     Ok(())

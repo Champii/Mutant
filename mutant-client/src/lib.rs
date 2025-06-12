@@ -22,7 +22,7 @@ use mutant_protocol::{
     ListDirectoryRequest, ListDirectoryResponse, GetFileInfoRequest, GetFileInfoResponse,
     // Onboarding types
     OnboardingStatusRequest, OnboardingStatusResponse, SetCredentialsRequest, SetCredentialsResponse,
-    InitializeColonyRequest, InitializeColonyResponse,
+    InitializeColonyRequest, InitializeColonyResponse, RestartDaemonRequest, RestartDaemonResponse,
 };
 
 pub mod error;
@@ -71,6 +71,7 @@ pub enum PendingRequestKey {
     OnboardingStatus,
     SetCredentials,
     InitializeColony,
+    RestartDaemon,
 }
 
 // Enum to hold the different sender types for the pending requests map
@@ -108,6 +109,7 @@ pub enum PendingSender {
     OnboardingStatus(oneshot::Sender<Result<OnboardingStatusResponse, ClientError>>),
     SetCredentials(oneshot::Sender<Result<SetCredentialsResponse, ClientError>>),
     InitializeColony(oneshot::Sender<Result<InitializeColonyResponse, ClientError>>),
+    RestartDaemon(oneshot::Sender<Result<RestartDaemonResponse, ClientError>>),
 }
 
 // The new map type for pending requests
@@ -877,6 +879,11 @@ impl MutantClient {
     /// Initialize colony after credentials are set
     pub async fn initialize_colony(&mut self) -> Result<InitializeColonyResponse, ClientError> {
         direct_request!(self, InitializeColony, InitializeColonyRequest {})
+    }
+
+    /// Restart the daemon to reload credentials
+    pub async fn restart_daemon(&mut self) -> Result<RestartDaemonResponse, ClientError> {
+        direct_request!(self, RestartDaemon, RestartDaemonRequest {})
     }
 
     /// Check if the client is connected and the connection is healthy

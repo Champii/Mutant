@@ -634,6 +634,19 @@ impl MutantClient {
                     warn!("Received InitializeColony response but no InitializeColony request was pending");
                 }
             },
+            Response::RestartDaemon(restart_daemon_response) => {
+                let pending_sender = pending_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&PendingRequestKey::RestartDaemon);
+                if let Some(PendingSender::RestartDaemon(sender)) = pending_sender {
+                    if sender.send(Ok(restart_daemon_response)).is_err() {
+                        warn!("Failed to send RestartDaemon response (receiver dropped)");
+                    }
+                } else {
+                    warn!("Received RestartDaemon response but no RestartDaemon request was pending");
+                }
+            },
         }
     }
 

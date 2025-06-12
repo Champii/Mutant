@@ -183,6 +183,19 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
 
     log::info!("Starting Mutant Daemon...");
 
+    // Load .env file if it exists to populate environment variables
+    if let Err(e) = dotenvy::dotenv() {
+        log::debug!("No .env file found or failed to load: {}", e);
+    } else {
+        log::info!("Loaded environment variables from .env file");
+
+        // Log what credentials were loaded (without exposing the actual values)
+        let has_private_key = std::env::var("PRIVATE_KEY").is_ok();
+        let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
+        log::info!("Environment variables loaded: PRIVATE_KEY={}, COLONY_MNEMONIC={}",
+                   has_private_key, has_colony_mnemonic);
+    }
+
     let network_choice = if options.local {
         NetworkChoice::Devnet
     } else if options.alphanet {

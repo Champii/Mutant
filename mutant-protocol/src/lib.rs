@@ -583,6 +583,7 @@ pub enum Request {
     OnboardingStatus(OnboardingStatusRequest),
     SetCredentials(SetCredentialsRequest),
     InitializeColony(InitializeColonyRequest),
+    RestartDaemon(RestartDaemonRequest),
     GetUserContact(GetUserContactRequest),
     ListContacts(ListContactsRequest),
     // Filesystem navigation requests
@@ -840,6 +841,9 @@ pub struct SetCredentialsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InitializeColonyRequest {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RestartDaemonRequest {}
+
 // Colony integration response types
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SearchResponse {
@@ -892,6 +896,12 @@ pub struct SetCredentialsResponse {
 pub struct InitializeColonyResponse {
     pub success: bool,
     pub pod_address: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RestartDaemonResponse {
+    pub success: bool,
     pub error: Option<String>,
 }
 
@@ -1023,6 +1033,7 @@ pub enum Response {
     OnboardingStatus(OnboardingStatusResponse),
     SetCredentials(SetCredentialsResponse),
     InitializeColony(InitializeColonyResponse),
+    RestartDaemon(RestartDaemonResponse),
     // Filesystem navigation responses
     ListDirectory(ListDirectoryResponse),
     GetFileInfo(GetFileInfoResponse),

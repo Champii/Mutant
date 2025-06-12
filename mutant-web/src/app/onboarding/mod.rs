@@ -153,13 +153,30 @@ impl OnboardingState {
         match ctx.initialize_colony().await {
             Ok(response) => {
                 if response.success {
-                    self.current_step = OnboardingStep::Completed;
-                    self.needs_onboarding = false; // Mark onboarding as fully completed
                     self.colony_initialization_progress = 1.0;
-                    self.colony_initialization_status = Some("Colony initialization completed!".to_string());
-                    self.is_loading = false;
-                    log::info!("Onboarding completed successfully - needs_onboarding set to false");
-                    Ok(())
+                    self.colony_initialization_status = Some("Colony initialization completed! Restarting daemon...".to_string());
+                    log::info!("Colony initialization completed successfully, now restarting daemon");
+
+                    // Restart the daemon to reload credentials
+                    match self.restart_daemon().await {
+                        Ok(_) => {
+                            self.current_step = OnboardingStep::Completed;
+                            self.needs_onboarding = false; // Mark onboarding as fully completed
+                            self.colony_initialization_status = Some("Daemon restarted successfully!".to_string());
+                            self.is_loading = false;
+                            log::info!("Onboarding completed successfully - daemon restarted and needs_onboarding set to false");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            log::warn!("Daemon restart failed, but onboarding is complete: {}", e);
+                            // Even if restart fails, mark onboarding as complete since credentials are saved
+                            self.current_step = OnboardingStep::Completed;
+                            self.needs_onboarding = false;
+                            self.colony_initialization_status = Some("Completed (daemon restart failed)".to_string());
+                            self.is_loading = false;
+                            Ok(())
+                        }
+                    }
                 } else {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
                     self.error_message = Some(error.clone());
@@ -204,6 +221,34 @@ impl OnboardingState {
             })
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Restart the daemon to reload credentials
+    pub async fn restart_daemon(&mut self) -> Result<(), String> {
+        log::info!("Restarting daemon to reload credentials");
+        self.is_loading = true;
+        self.error_message = None;
+
+        let ctx = context();
+        match ctx.restart_daemon().await {
+            Ok(response) => {
+                if response.success {
+                    log::info!("Daemon restart initiated successfully");
+                    Ok(())
+                } else {
+                    let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+                    self.error_message = Some(error.clone());
+                    self.is_loading = false;
+                    Err(error)
+                }
+            }
+            Err(e) => {
+                let error = format!("Failed to restart daemon: {}", e);
+                self.error_message = Some(error.clone());
+                self.is_loading = false;
+                Err(error)
+            }
+        }
     }
 
     /// Reset the onboarding state

@@ -405,6 +405,11 @@ impl Context {
         self.client.initialize_colony().await.map_err(|e| e.to_string())
     }
 
+    /// Restart the daemon to reload credentials
+    pub async fn restart_daemon(&self) -> Result<mutant_protocol::RestartDaemonResponse, String> {
+        self.client.restart_daemon().await.map_err(|e| e.to_string())
+    }
+
     // Create a new progress object for tracking a put operation
     pub fn create_progress(&self, key: &str, filename: &str) -> (String, Arc<RwLock<Progress>>) {
         // Generate a unique ID for this put operation
