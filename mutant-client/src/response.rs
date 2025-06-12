@@ -594,6 +594,46 @@ impl MutantClient {
                     warn!("Received GetFileInfo response but no GetFileInfo request was pending");
                 }
             },
+            // Onboarding responses
+            Response::OnboardingStatus(onboarding_status_response) => {
+                let pending_sender = pending_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&PendingRequestKey::OnboardingStatus);
+                if let Some(PendingSender::OnboardingStatus(sender)) = pending_sender {
+                    if sender.send(Ok(onboarding_status_response)).is_err() {
+                        warn!("Failed to send OnboardingStatus response (receiver dropped)");
+                    }
+                } else {
+                    warn!("Received OnboardingStatus response but no OnboardingStatus request was pending");
+                }
+            },
+            Response::SetCredentials(set_credentials_response) => {
+                let pending_sender = pending_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&PendingRequestKey::SetCredentials);
+                if let Some(PendingSender::SetCredentials(sender)) = pending_sender {
+                    if sender.send(Ok(set_credentials_response)).is_err() {
+                        warn!("Failed to send SetCredentials response (receiver dropped)");
+                    }
+                } else {
+                    warn!("Received SetCredentials response but no SetCredentials request was pending");
+                }
+            },
+            Response::InitializeColony(initialize_colony_response) => {
+                let pending_sender = pending_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&PendingRequestKey::InitializeColony);
+                if let Some(PendingSender::InitializeColony(sender)) = pending_sender {
+                    if sender.send(Ok(initialize_colony_response)).is_err() {
+                        warn!("Failed to send InitializeColony response (receiver dropped)");
+                    }
+                } else {
+                    warn!("Received InitializeColony response but no InitializeColony request was pending");
+                }
+            },
         }
     }
 

@@ -368,6 +368,23 @@ impl Context {
         self.daemon_status_cache.clone()
     }
 
+    // --- Onboarding Methods ---
+
+    /// Check if onboarding is needed
+    pub async fn check_onboarding_status(&self) -> Result<mutant_protocol::OnboardingStatusResponse, String> {
+        self.client.check_onboarding_status().await.map_err(|e| e.to_string())
+    }
+
+    /// Set credentials for the daemon
+    pub async fn set_credentials(&self, private_key: Option<String>, colony_mnemonic: Option<String>) -> Result<mutant_protocol::SetCredentialsResponse, String> {
+        self.client.set_credentials(private_key, colony_mnemonic).await.map_err(|e| e.to_string())
+    }
+
+    /// Initialize colony after credentials are set
+    pub async fn initialize_colony(&self) -> Result<mutant_protocol::InitializeColonyResponse, String> {
+        self.client.initialize_colony().await.map_err(|e| e.to_string())
+    }
+
     // Create a new progress object for tracking a put operation
     pub fn create_progress(&self, key: &str, filename: &str) -> (String, Arc<RwLock<Progress>>) {
         // Generate a unique ID for this put operation

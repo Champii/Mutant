@@ -579,6 +579,10 @@ pub enum Request {
     AddContact(AddContactRequest),
     ListContent(ListContentRequest),
     SyncContacts(SyncContactsRequest),
+    // Onboarding requests
+    OnboardingStatus(OnboardingStatusRequest),
+    SetCredentials(SetCredentialsRequest),
+    InitializeColony(InitializeColonyRequest),
     GetUserContact(GetUserContactRequest),
     ListContacts(ListContactsRequest),
     // Filesystem navigation requests
@@ -822,6 +826,20 @@ pub struct GetFileInfoRequest {
     pub path: String,
 }
 
+// --- Onboarding Requests ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OnboardingStatusRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetCredentialsRequest {
+    pub private_key: Option<String>,
+    pub colony_mnemonic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InitializeColonyRequest {}
+
 // Colony integration response types
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SearchResponse {
@@ -852,6 +870,29 @@ pub struct ListContentResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SyncContactsResponse {
     pub synced_count: usize,
+}
+
+// --- Onboarding Response Types ---
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingStatusResponse {
+    pub needs_onboarding: bool,
+    pub missing_private_key: bool,
+    pub missing_colony_mnemonic: bool,
+    pub missing_config_dir: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SetCredentialsResponse {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct InitializeColonyResponse {
+    pub success: bool,
+    pub pod_address: Option<String>,
+    pub error: Option<String>,
 }
 
 // --- Filesystem Navigation Response Types ---
@@ -978,6 +1019,10 @@ pub enum Response {
     ListContacts(ListContactsResponse),
     /// Colony operation progress update
     ColonyProgress(ColonyProgressResponse),
+    // Onboarding responses
+    OnboardingStatus(OnboardingStatusResponse),
+    SetCredentials(SetCredentialsResponse),
+    InitializeColony(InitializeColonyResponse),
     // Filesystem navigation responses
     ListDirectory(ListDirectoryResponse),
     GetFileInfo(GetFileInfoResponse),

@@ -66,6 +66,18 @@ pub enum ClientRequest {
         is_last: bool,
         response_name: String,
     },
+    // Onboarding requests
+    CheckOnboardingStatus {
+        response_name: String,
+    },
+    SetCredentials {
+        private_key: Option<String>,
+        colony_mnemonic: Option<String>,
+        response_name: String,
+    },
+    InitializeColony {
+        response_name: String,
+    },
 }
 
 #[derive(Debug)]
@@ -80,6 +92,10 @@ pub enum ClientResponse {
     GetDaemonStatus(Result<mutant_protocol::DaemonStatusResponse, String>),
     PutStreamingInit(Result<(mutant_protocol::TaskId, mutant_client::ProgressReceiver), String>),
     PutStreamingChunk(Result<(), String>),
+    // Onboarding responses
+    CheckOnboardingStatus(Result<mutant_protocol::OnboardingStatusResponse, String>),
+    SetCredentials(Result<mutant_protocol::SetCredentialsResponse, String>),
+    InitializeColony(Result<mutant_protocol::InitializeColonyResponse, String>),
 }
 
 pub struct Client {
@@ -238,6 +254,25 @@ impl Client {
 
                         if let Some(tx) = responses.write().unwrap().remove(&response_name) {
                             let _ = tx.send(ClientResponse::PutStreamingChunk(result));
+                        }
+                    }
+                    // Onboarding requests
+                    ClientRequest::CheckOnboardingStatus { response_name } => {
+                        let result = this.client.check_onboarding_status().await.map_err(|e| format!("{:?}", e));
+                        if let Some(tx) = responses.write().unwrap().remove(&response_name) {
+                            let _ = tx.send(ClientResponse::CheckOnboardingStatus(result));
+                        }
+                    }
+                    ClientRequest::SetCredentials { private_key, colony_mnemonic, response_name } => {
+                        let result = this.client.set_credentials(private_key, colony_mnemonic).await.map_err(|e| format!("{:?}", e));
+                        if let Some(tx) = responses.write().unwrap().remove(&response_name) {
+                            let _ = tx.send(ClientResponse::SetCredentials(result));
+                        }
+                    }
+                    ClientRequest::InitializeColony { response_name } => {
+                        let result = this.client.initialize_colony().await.map_err(|e| format!("{:?}", e));
+                        if let Some(tx) = responses.write().unwrap().remove(&response_name) {
+                            let _ = tx.send(ClientResponse::InitializeColony(result));
                         }
                     }
                 }
@@ -844,6 +879,91 @@ impl ClientSender {
             }
         })
     }
+
+    // --- Onboarding Methods ---
+
+    pub async fn check_onboarding_status(&self) -> Result<mutant_protocol::OnboardingStatusResponse, String> {
+        let response_name = "check_onboarding_status".to_string();
+
+        if self.responses.read().unwrap().contains_key(&response_name) {
+            error!("CheckOnboardingStatus request already pending");
+            return Err("CheckOnboardingStatus request already pending".to_string());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.responses.write().unwrap().insert(response_name.clone(), tx);
+
+        let request = ClientRequest::CheckOnboardingStatus {
+            response_name: response_name.clone(),
+        };
+
+        self.tx.unbounded_send(request)
+            .map_err(|e| format!("Failed to send check onboarding status request: {}", e))?;
+
+        rx.await.map_err(|e| format!("{:?}", e)).and_then(|response| {
+            match response {
+                ClientResponse::CheckOnboardingStatus(Ok(result)) => Ok(result),
+                ClientResponse::CheckOnboardingStatus(Err(e)) => Err(e),
+                _ => Err("Unexpected response".to_string()),
+            }
+        })
+    }
+
+    pub async fn set_credentials(&self, private_key: Option<String>, colony_mnemonic: Option<String>) -> Result<mutant_protocol::SetCredentialsResponse, String> {
+        let response_name = "set_credentials".to_string();
+
+        if self.responses.read().unwrap().contains_key(&response_name) {
+            error!("SetCredentials request already pending");
+            return Err("SetCredentials request already pending".to_string());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.responses.write().unwrap().insert(response_name.clone(), tx);
+
+        let request = ClientRequest::SetCredentials {
+            private_key,
+            colony_mnemonic,
+            response_name: response_name.clone(),
+        };
+
+        self.tx.unbounded_send(request)
+            .map_err(|e| format!("Failed to send set credentials request: {}", e))?;
+
+        rx.await.map_err(|e| format!("{:?}", e)).and_then(|response| {
+            match response {
+                ClientResponse::SetCredentials(Ok(result)) => Ok(result),
+                ClientResponse::SetCredentials(Err(e)) => Err(e),
+                _ => Err("Unexpected response".to_string()),
+            }
+        })
+    }
+
+    pub async fn initialize_colony(&self) -> Result<mutant_protocol::InitializeColonyResponse, String> {
+        let response_name = "initialize_colony".to_string();
+
+        if self.responses.read().unwrap().contains_key(&response_name) {
+            error!("InitializeColony request already pending");
+            return Err("InitializeColony request already pending".to_string());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.responses.write().unwrap().insert(response_name.clone(), tx);
+
+        let request = ClientRequest::InitializeColony {
+            response_name: response_name.clone(),
+        };
+
+        self.tx.unbounded_send(request)
+            .map_err(|e| format!("Failed to send initialize colony request: {}", e))?;
+
+        rx.await.map_err(|e| format!("{:?}", e)).and_then(|response| {
+            match response {
+                ClientResponse::InitializeColony(Ok(result)) => Ok(result),
+                ClientResponse::InitializeColony(Err(e)) => Err(e),
+                _ => Err("Unexpected response".to_string()),
+            }
+        })
+    }
 }
 
 fn handle_get_progress(mut progress_rx: ProgressReceiver, get_id: String) {
@@ -959,6 +1079,8 @@ struct MyApp {
     fs_window: Arc<RwLock<FsWindow>>,
     sidebar_expanded: bool,
     balance_fetch_counter: u32,
+    onboarding_wizard: app::onboarding::wizard::OnboardingWizard,
+    onboarding_initialized: bool,
 }
 
 impl Default for MyApp {
@@ -972,6 +1094,8 @@ impl Default for MyApp {
             fs_window,
             sidebar_expanded: true,
             balance_fetch_counter: 0,
+            onboarding_wizard: app::onboarding::wizard::OnboardingWizard::default(),
+            onboarding_initialized: false,
         }
     }
 }
@@ -1285,6 +1409,29 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply the MutAnt theme
         app::theme::apply_mutant_theme(ctx);
+
+        // Initialize onboarding check on first frame
+        if !self.onboarding_initialized {
+            self.onboarding_initialized = true;
+            log::info!("Initializing onboarding check...");
+            spawn_local(async {
+                log::info!("Starting onboarding initialization...");
+                app::onboarding::init_onboarding().await;
+                log::info!("Onboarding initialization completed");
+            });
+        }
+
+        // Check if onboarding is active and show the wizard
+        let onboarding_active = app::onboarding::is_onboarding_active();
+        log::debug!("Onboarding active: {}", onboarding_active);
+        if onboarding_active {
+            log::info!("Showing onboarding wizard");
+            if self.onboarding_wizard.show(ctx) {
+                // Onboarding is still active, don't show the main interface
+                log::debug!("Onboarding wizard shown, skipping main interface");
+                return;
+            }
+        }
 
         // Show the header
         self.draw_header(ctx);

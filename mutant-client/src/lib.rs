@@ -20,6 +20,9 @@ use mutant_protocol::{
     ListContactsResponse, ListContactsRequest,
     // Filesystem navigation types
     ListDirectoryRequest, ListDirectoryResponse, GetFileInfoRequest, GetFileInfoResponse,
+    // Onboarding types
+    OnboardingStatusRequest, OnboardingStatusResponse, SetCredentialsRequest, SetCredentialsResponse,
+    InitializeColonyRequest, InitializeColonyResponse,
 };
 
 pub mod error;
@@ -64,6 +67,10 @@ pub enum PendingRequestKey {
     // Filesystem navigation
     ListDirectory,
     GetFileInfo,
+    // Onboarding
+    OnboardingStatus,
+    SetCredentials,
+    InitializeColony,
 }
 
 // Enum to hold the different sender types for the pending requests map
@@ -97,6 +104,10 @@ pub enum PendingSender {
     // Filesystem navigation
     ListDirectory(oneshot::Sender<Result<ListDirectoryResponse, ClientError>>),
     GetFileInfo(oneshot::Sender<Result<GetFileInfoResponse, ClientError>>),
+    // Onboarding
+    OnboardingStatus(oneshot::Sender<Result<OnboardingStatusResponse, ClientError>>),
+    SetCredentials(oneshot::Sender<Result<SetCredentialsResponse, ClientError>>),
+    InitializeColony(oneshot::Sender<Result<InitializeColonyResponse, ClientError>>),
 }
 
 // The new map type for pending requests
@@ -846,6 +857,26 @@ impl MutantClient {
         let mut client = Self::new();
         client.connect(url).await?;
         Ok(client)
+    }
+
+    // --- Onboarding Methods ---
+
+    /// Check if onboarding is needed
+    pub async fn check_onboarding_status(&mut self) -> Result<OnboardingStatusResponse, ClientError> {
+        direct_request!(self, OnboardingStatus, OnboardingStatusRequest {})
+    }
+
+    /// Set credentials for the daemon
+    pub async fn set_credentials(&mut self, private_key: Option<String>, colony_mnemonic: Option<String>) -> Result<SetCredentialsResponse, ClientError> {
+        direct_request!(self, SetCredentials, SetCredentialsRequest {
+            private_key,
+            colony_mnemonic,
+        })
+    }
+
+    /// Initialize colony after credentials are set
+    pub async fn initialize_colony(&mut self) -> Result<InitializeColonyResponse, ClientError> {
+        direct_request!(self, InitializeColony, InitializeColonyRequest {})
     }
 
     /// Check if the client is connected and the connection is healthy
