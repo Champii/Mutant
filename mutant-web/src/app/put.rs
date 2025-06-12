@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 use mutant_protocol::StorageMode;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
-use web_time::{Duration, SystemTime};
+use web_time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::Window;
 use super::components::file_picker::FilePicker;
@@ -147,7 +147,7 @@ impl Default for PutWindow {
             elapsed_time: Arc::new(RwLock::new(Duration::from_secs(0))),
             last_progress_check: Arc::new(RwLock::new(SystemTime::now())),
             current_put_id: Arc::new(RwLock::new(None)),
-            window_id: uuid::Uuid::new_v4().to_string(),
+            window_id: generate_wasm_compatible_id(),
         }
     }
 }
@@ -1278,4 +1278,11 @@ impl PutWindow {
         *self.start_time.write().unwrap() = None;
         *self.elapsed_time.write().unwrap() = Duration::from_secs(0);
     }
+}
+
+/// Generate a WASM-compatible unique ID using timestamp and random values
+fn generate_wasm_compatible_id() -> String {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let random_value = (js_sys::Math::random() * 1_000_000_000.0) as u64;
+    format!("id_{}_{}", timestamp, random_value)
 }

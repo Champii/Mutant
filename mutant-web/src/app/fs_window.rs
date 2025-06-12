@@ -4,6 +4,7 @@ use eframe::egui::{self, RichText};
 
 use mutant_protocol::KeyDetails;
 use serde::{Deserialize, Serialize};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 // Updated use statements
 use crate::app::components::multimedia;
@@ -76,19 +77,33 @@ impl Default for FsWindow {
 
         log::debug!("Created new FsWindow with placeholder tab trick for proper dock initialization");
 
+        // Use try_context to safely get the context, or create an empty cache if not initialized
+        let keys_cache = if let Some(ctx) = crate::app::context::try_context() {
+            ctx.get_key_cache()
+        } else {
+            Arc::new(RwLock::new(Vec::new()))
+        };
+
         Self {
-            keys: crate::app::context::context().get_key_cache(),
+            keys: keys_cache,
             root: crate::app::fs::tree::TreeNode::default(),
             selected_path: None,
             internal_dock,
             active_downloads: Arc::new(Mutex::new(Vec::new())),
-            window_id: uuid::Uuid::new_v4().to_string(),
+            window_id: generate_wasm_compatible_id(),
             pending_delete: None,
             dock_area_id: generate_unique_dock_area_id(),
             drag_state: crate::app::fs::tree::DragDropState::default(),
             last_docking_area_rect: None,
         }
     }
+}
+
+/// Generate a WASM-compatible unique ID using timestamp and random values
+fn generate_wasm_compatible_id() -> String {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let random_value = (js_sys::Math::random() * 1_000_000_000.0) as u64;
+    format!("id_{}_{}", timestamp, random_value)
 }
 
 impl Window for FsWindow {

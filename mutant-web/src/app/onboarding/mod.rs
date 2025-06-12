@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::context::context;
 
@@ -173,11 +174,12 @@ impl OnboardingState {
     /// Generate a random private key (placeholder - in real implementation this should be cryptographically secure)
     fn generate_private_key(&self) -> String {
         // This is a placeholder - in a real implementation, this should use proper cryptographic libraries
-        // For now, we'll use a simple timestamp-based approach
-        use std::time::{SystemTime, UNIX_EPOCH};
+        // For WASM, we'll use a combination of timestamp and browser's Math.random()
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        // Use a smaller modulus to avoid overflow
-        format!("{:064x}", timestamp % (1u128 << 64))
+        let random_value = (js_sys::Math::random() * 1_000_000_000.0) as u64;
+        // Combine timestamp and random value for better entropy
+        let combined = timestamp.wrapping_add(random_value as u128);
+        format!("{:064x}", combined % (1u128 << 64))
     }
 
     /// Generate a random colony mnemonic (placeholder)
@@ -187,11 +189,14 @@ impl OnboardingState {
             "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
             "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
         ];
-        // Simple deterministic selection based on timestamp
-        use std::time::{SystemTime, UNIX_EPOCH};
+        // Use timestamp and random values for word selection in WASM
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         (0..12)
-            .map(|i| words[(timestamp as usize + i) % words.len()])
+            .map(|i| {
+                let random_offset = (js_sys::Math::random() * words.len() as f64) as usize;
+                let index = (timestamp as usize + i + random_offset) % words.len();
+                words[index]
+            })
             .collect::<Vec<_>>()
             .join(" ")
     }

@@ -55,7 +55,12 @@ pub async fn init_context() {
 
 // Public function to get the context
 pub fn context() -> Arc<Context> {
-    CONTEXT.lock().unwrap().as_ref().unwrap().clone()
+    CONTEXT.lock().unwrap().as_ref().expect("Context not initialized - call init_context() first").clone()
+}
+
+// Safe function to get the context that returns None if not initialized
+pub fn try_context() -> Option<Arc<Context>> {
+    CONTEXT.lock().unwrap().as_ref().cloned()
 }
 
 impl Context {
