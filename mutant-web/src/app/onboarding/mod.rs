@@ -219,7 +219,11 @@ pub fn onboarding_state() -> Arc<RwLock<OnboardingState>> {
 
 /// Check if onboarding is currently active
 pub fn is_onboarding_active() -> bool {
+    log::debug!("is_onboarding_active() called");
+    log::debug!("Attempting to read ONBOARDING_STATE...");
+
     if let Ok(state) = ONBOARDING_STATE.read() {
+        log::debug!("Successfully got ONBOARDING_STATE read lock");
         let is_active = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
         log::debug!("is_onboarding_active: needs_onboarding={}, current_step={:?}, is_active={}",
             state.needs_onboarding, state.current_step, is_active);
@@ -230,9 +234,23 @@ pub fn is_onboarding_active() -> bool {
     }
 }
 
+/// Reset onboarding state for clean initialization
+pub fn reset_onboarding_state() {
+    if let Ok(mut state) = ONBOARDING_STATE.write() {
+        *state = OnboardingState::default();
+        log::info!("Onboarding state reset for clean initialization");
+    } else {
+        log::error!("Failed to get onboarding state lock for reset");
+    }
+}
+
 /// Initialize onboarding by checking status
 pub async fn init_onboarding() {
     log::info!("init_onboarding called");
+
+    // First reset the onboarding state for clean initialization
+    reset_onboarding_state();
+
     if let Ok(mut state) = ONBOARDING_STATE.write() {
         log::info!("Got onboarding state lock, calling check_onboarding_status");
         match state.check_onboarding_status().await {

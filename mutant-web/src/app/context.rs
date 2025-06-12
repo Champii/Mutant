@@ -49,8 +49,13 @@ lazy_static! {
 }
 
 pub async fn init_context() {
+    // First, clear any existing context to ensure clean initialization
+    *CONTEXT.lock().unwrap() = None;
+    log::info!("Cleared existing context for clean initialization");
+
     let context = Context::new().await;
     *CONTEXT.lock().unwrap() = Some(Arc::new(context));
+    log::info!("Context initialization completed");
 }
 
 // Public function to get the context
@@ -66,6 +71,16 @@ pub fn try_context() -> Option<Arc<Context>> {
 impl Context {
     async fn new() -> Self {
         let client = Client::spawn().await;
+
+        // Clear any stale response handlers from previous sessions
+        // This is crucial to prevent "request already pending" errors on page refresh
+        {
+            let responses = client.responses.write().unwrap();
+            if !responses.is_empty() {
+                log::info!("Cleared {} stale response handlers from previous session", responses.len());
+            }
+        }
+        client.responses.write().unwrap().clear();
 
         Self {
             client,

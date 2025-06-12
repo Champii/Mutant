@@ -20,7 +20,12 @@ impl Default for OnboardingWizard {
 impl OnboardingWizard {
     /// Show the onboarding wizard as a full-screen modal
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
+        log::debug!("OnboardingWizard::show() called");
+
+        log::debug!("Getting onboarding state...");
         let state = onboarding_state();
+        log::debug!("Got onboarding state, attempting to read...");
+
         let should_show = if let Ok(state) = state.read() {
             let should_show = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
             log::debug!("Onboarding wizard: needs_onboarding={}, current_step={:?}, should_show={}",

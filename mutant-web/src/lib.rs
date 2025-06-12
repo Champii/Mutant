@@ -35,9 +35,19 @@ pub fn start() {
 }
 
 pub async fn async_start() {
+    // Initialize context and wait for it to be ready
     init_context().await;
-    run();
 
+    // Verify context is properly initialized before proceeding
+    let _ctx = app::context::context();
+    log::info!("Context initialized successfully");
+
+    // Initialize app components that depend on context
+    app::init().await;
+    log::info!("App initialization completed");
+
+    // Now start the UI
+    run();
 }
 
 pub enum ClientRequest {
@@ -258,9 +268,22 @@ impl Client {
                     }
                     // Onboarding requests
                     ClientRequest::CheckOnboardingStatus { response_name } => {
-                        let result = this.client.check_onboarding_status().await.map_err(|e| format!("{:?}", e));
+                        log::info!("Client worker: Processing CheckOnboardingStatus request");
+                        log::info!("Client worker: About to call client.check_onboarding_status()");
+
+                        let result = this.client.check_onboarding_status().await.map_err(|e| {
+                            log::error!("Client worker: check_onboarding_status failed: {:?}", e);
+                            format!("{:?}", e)
+                        });
+
+                        log::info!("Client worker: check_onboarding_status completed, result: {:?}", result);
+                        log::info!("Client worker: Sending CheckOnboardingStatus response");
+
                         if let Some(tx) = responses.write().unwrap().remove(&response_name) {
                             let _ = tx.send(ClientResponse::CheckOnboardingStatus(result));
+                            log::info!("Client worker: Response sent successfully");
+                        } else {
+                            log::error!("Client worker: No response channel found for {}", response_name);
                         }
                     }
                     ClientRequest::SetCredentials { private_key, colony_mnemonic, response_name } => {
@@ -1081,6 +1104,7 @@ struct MyApp {
     balance_fetch_counter: u32,
     onboarding_wizard: app::onboarding::wizard::OnboardingWizard,
     onboarding_initialized: bool,
+    frame_counter: u32,
 }
 
 impl Default for MyApp {
@@ -1096,6 +1120,7 @@ impl Default for MyApp {
             balance_fetch_counter: 0,
             onboarding_wizard: app::onboarding::wizard::OnboardingWizard::default(),
             onboarding_initialized: false,
+            frame_counter: 0,
         }
     }
 }
@@ -1407,8 +1432,13 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame_counter += 1;
+        log::debug!("=== MyApp::update() called - Frame {} ===", self.frame_counter);
+
         // Apply the MutAnt theme
+        log::debug!("Frame {}: Applying MutAnt theme...", self.frame_counter);
         app::theme::apply_mutant_theme(ctx);
+        log::debug!("Frame {}: MutAnt theme applied successfully", self.frame_counter);
 
         // Initialize onboarding check on first frame
         if !self.onboarding_initialized {
@@ -1422,22 +1452,39 @@ impl eframe::App for MyApp {
         }
 
         // Check if onboarding is active and show the wizard
-        let onboarding_active = app::onboarding::is_onboarding_active();
-        log::debug!("Onboarding active: {}", onboarding_active);
-        if onboarding_active {
-            log::info!("Showing onboarding wizard");
-            if self.onboarding_wizard.show(ctx) {
-                // Onboarding is still active, don't show the main interface
-                log::debug!("Onboarding wizard shown, skipping main interface");
-                return;
-            }
+        // Add a small delay to ensure rendering system is stable
+        if self.frame_counter < 5 {
+            log::debug!("Frame {}: Skipping onboarding check (waiting for rendering to stabilize)", self.frame_counter);
+            return;
         }
 
+        log::debug!("Frame {}: About to check if onboarding is active...", self.frame_counter);
+        let onboarding_active = app::onboarding::is_onboarding_active();
+        log::debug!("Frame {}: Onboarding active check completed: {}", self.frame_counter, onboarding_active);
+
+        if onboarding_active {
+            log::debug!("Frame {}: About to call onboarding_wizard.show(ctx)...", self.frame_counter);
+            let wizard_result = self.onboarding_wizard.show(ctx);
+            log::debug!("Frame {}: onboarding_wizard.show(ctx) returned: {}", self.frame_counter, wizard_result);
+            if wizard_result {
+                // Onboarding is still active, don't show the main interface
+                log::debug!("Frame {}: Onboarding wizard shown, skipping main interface", self.frame_counter);
+                return;
+            }
+            log::debug!("Frame {}: Onboarding wizard.show() completed, continuing to main interface", self.frame_counter);
+        }
+
+        log::debug!("Starting main UI rendering...");
+
         // Show the header
+        log::debug!("Drawing header...");
         self.draw_header(ctx);
+        log::debug!("Header drawn successfully");
 
         // Show the left menu
+        log::debug!("Drawing left menu...");
         self.draw_left_menu(ctx);
+        log::debug!("Left menu drawn successfully");
 
         // Draw the toggle button as a floating circular button that overlaps with the main content
         let sidebar_width = if self.sidebar_expanded { 200.0 } else { 60.0 };
@@ -1466,21 +1513,27 @@ impl eframe::App for MyApp {
             });
 
         // Show the main FS window in the remaining space
+        log::debug!("Drawing central panel and FS window...");
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(app::theme::MutantColors::BACKGROUND_DARK))
             .show(ctx, |ui| {
                 // Render the static FS window directly
                 // All windows now dock within the FS window's internal dock system
+                log::debug!("About to draw FS window...");
                 self.fs_window.write().unwrap().draw(ui);
+                log::debug!("FS window drawn successfully");
             });
-
-
+        log::debug!("Central panel drawn successfully");
 
         // Show notifications
+        log::debug!("Showing notifications...");
         app::notifications::show_notifications(ctx);
+        log::debug!("Notifications shown successfully");
 
         // Update video player z-index based on which tabs are currently visible
+        log::debug!("Updating video player z-index...");
         app::fs::viewer_tab::update_video_player_z_index();
+        log::debug!("Video player z-index updated successfully");
     }
 }
 
@@ -1569,8 +1622,6 @@ pub fn run() {
             canvas_style.set_property("top", "0").unwrap();
             canvas_style.set_property("left", "0").unwrap();
             canvas_style.set_property("z-index", "1").unwrap();
-
-            app::init().await;
 
             let start_result = eframe::WebRunner::new()
                 .start(
