@@ -20,6 +20,7 @@ pub struct OnboardingState {
     pub error_message: Option<String>,
     pub colony_initialization_progress: f32,
     pub colony_initialization_status: Option<String>,
+    pub colony_initialization_started: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -43,6 +44,7 @@ impl Default for OnboardingState {
             error_message: None,
             colony_initialization_progress: 0.0,
             colony_initialization_status: None,
+            colony_initialization_started: false,
         }
     }
 }
@@ -121,6 +123,7 @@ impl OnboardingState {
             Ok(response) => {
                 if response.success {
                     self.current_step = OnboardingStep::ColonyInitialization;
+                    self.colony_initialization_started = false; // Reset flag for new step
                     self.is_loading = false;
                     Ok(())
                 } else {
@@ -151,9 +154,11 @@ impl OnboardingState {
             Ok(response) => {
                 if response.success {
                     self.current_step = OnboardingStep::Completed;
+                    self.needs_onboarding = false; // Mark onboarding as fully completed
                     self.colony_initialization_progress = 1.0;
                     self.colony_initialization_status = Some("Colony initialization completed!".to_string());
                     self.is_loading = false;
+                    log::info!("Onboarding completed successfully - needs_onboarding set to false");
                     Ok(())
                 } else {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
@@ -225,7 +230,7 @@ pub fn is_onboarding_active() -> bool {
     if let Ok(state) = ONBOARDING_STATE.read() {
         log::debug!("Successfully got ONBOARDING_STATE read lock");
         let is_active = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
-        log::debug!("is_onboarding_active: needs_onboarding={}, current_step={:?}, is_active={}",
+        log::info!("is_onboarding_active: needs_onboarding={}, current_step={:?}, is_active={}",
             state.needs_onboarding, state.current_step, is_active);
         is_active
     } else {

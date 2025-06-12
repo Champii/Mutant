@@ -282,23 +282,45 @@ impl OnboardingWizard {
     }
 
     fn draw_colony_initialization(&self, ui: &mut egui::Ui, state: &mut OnboardingState) {
+        // Check if we need to start initialization before drawing UI
+        let should_start_initialization = !state.is_loading && !state.colony_initialization_started && state.colony_initialization_progress == 0.0;
+
+        if should_start_initialization {
+            state.colony_initialization_started = true; // Set flag immediately to prevent multiple spawns
+            log::info!("Starting colony initialization auto-start");
+
+            // Spawn the async task without holding the lock
+            wasm_bindgen_futures::spawn_local(async move {
+                log::info!("Colony initialization async task started");
+                if let Ok(mut state) = onboarding_state().write() {
+                    log::info!("Got write lock for colony initialization");
+                    match state.initialize_colony().await {
+                        Ok(_) => log::info!("Colony initialization completed successfully"),
+                        Err(e) => log::error!("Colony initialization failed: {}", e),
+                    }
+                } else {
+                    log::error!("Failed to get write lock for colony initialization");
+                }
+            });
+        }
+
         ui.vertical_centered(|ui| {
             ui.label(
                 egui::RichText::new("Initializing Colony")
                     .font(FontId::proportional(20.0))
                     .color(MutantColors::TEXT_PRIMARY)
             );
-            
+
             ui.add_space(20.0);
-            
+
             // Progress bar
             let progress = egui::ProgressBar::new(state.colony_initialization_progress)
                 .fill(MutantColors::ACCENT_ORANGE)
                 .animate(state.is_loading);
             ui.add(progress);
-            
+
             ui.add_space(10.0);
-            
+
             if let Some(status) = &state.colony_initialization_status {
                 ui.label(
                     egui::RichText::new(status)
@@ -311,15 +333,6 @@ impl OnboardingWizard {
             if let Some(error) = &state.error_message {
                 ui.add_space(10.0);
                 ui.colored_label(MutantColors::ERROR, error);
-            }
-
-            // Auto-start initialization
-            if !state.is_loading && state.colony_initialization_progress == 0.0 {
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(mut state) = onboarding_state().write() {
-                        let _ = state.initialize_colony().await;
-                    }
-                });
             }
         });
     }
