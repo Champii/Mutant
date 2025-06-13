@@ -313,11 +313,25 @@ impl OnboardingWizard {
 
             ui.add_space(20.0);
 
+            // Connection status indicator
+            self.draw_connection_status(ui, state);
+
+            ui.add_space(15.0);
+
             // Progress bar
             let progress = egui::ProgressBar::new(state.colony_initialization_progress)
                 .fill(MutantColors::ACCENT_ORANGE)
                 .animate(state.is_loading);
             ui.add(progress);
+
+            ui.add_space(10.0);
+
+            // Progress percentage
+            ui.label(
+                egui::RichText::new(format!("{:.0}%", state.colony_initialization_progress * 100.0))
+                    .font(FontId::proportional(12.0))
+                    .color(MutantColors::TEXT_SECONDARY)
+            );
 
             ui.add_space(10.0);
 
@@ -329,10 +343,67 @@ impl OnboardingWizard {
                 );
             }
 
+            // Reconnection status
+            if state.reconnection_attempts > 0 {
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(format!("Reconnection attempts: {}/{}",
+                        state.reconnection_attempts, state.max_reconnection_attempts))
+                        .font(FontId::proportional(12.0))
+                        .color(MutantColors::WARNING)
+                );
+            }
+
             // Error message
             if let Some(error) = &state.error_message {
                 ui.add_space(10.0);
                 ui.colored_label(MutantColors::ERROR, error);
+
+                // Retry button for connection errors
+                if error.contains("connection") || error.contains("Connection") {
+                    ui.add_space(10.0);
+                    if ui.add(theme::secondary_button("Retry Connection")).clicked() {
+                        // Trigger connection check
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(mut state) = onboarding_state().write() {
+                                let _ = state.check_connection_status().await;
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    /// Draw connection status indicator
+    fn draw_connection_status(&self, ui: &mut egui::Ui, state: &OnboardingState) {
+        ui.horizontal(|ui| {
+            // Connection status icon and text
+            let (icon, color, text) = match state.connection_status {
+                super::ConnectionStatus::Connected => ("🟢", MutantColors::SUCCESS, "Connected"),
+                super::ConnectionStatus::Disconnected => ("🔴", MutantColors::ERROR, "Disconnected"),
+                super::ConnectionStatus::Reconnecting => ("🟡", MutantColors::WARNING, "Reconnecting..."),
+                super::ConnectionStatus::Unknown => ("⚪", MutantColors::TEXT_SECONDARY, "Checking..."),
+            };
+
+            ui.label(
+                egui::RichText::new(format!("{} {}", icon, text))
+                    .font(FontId::proportional(12.0))
+                    .color(color)
+            );
+
+            // Show last check time if available
+            if let Some(last_check) = state.last_connection_check {
+                if let Ok(elapsed) = last_check.elapsed() {
+                    let seconds_ago = elapsed.as_secs();
+                    if seconds_ago < 60 {
+                        ui.label(
+                            egui::RichText::new(format!("({}s ago)", seconds_ago))
+                                .font(FontId::proportional(10.0))
+                                .color(MutantColors::TEXT_SECONDARY)
+                        );
+                    }
+                }
             }
         });
     }
