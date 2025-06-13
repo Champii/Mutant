@@ -2,7 +2,7 @@ use eframe::egui::{self, Image, RichText, Sense, TextureHandle, TextureOptions, 
 use egui_extras::syntax_highlighting::{self, CodeTheme};
 use image;
 use mime_guess::from_path;
-use wasm_bindgen; // Keep for #[wasm_bindgen] attribute in bindings module
+// wasm_bindgen import removed as it's not used at top level
 // JsCast and prelude removed as they were unused at top level. web_sys also removed.
 use base64::Engine;
 use crate::app::theme::MutantColors;

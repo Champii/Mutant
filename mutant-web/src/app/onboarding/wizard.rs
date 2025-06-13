@@ -191,7 +191,13 @@ impl OnboardingWizard {
         });
     }
 
-    fn draw_credential_collection(&self, ui: &mut egui::Ui, state: &mut OnboardingState) {
+    fn draw_credential_collection(&self, ui: &mut egui::Ui, state: &OnboardingState) {
+        // Create local mutable copies for UI interaction
+        let mut local_private_key = state.private_key.clone();
+        let mut local_colony_mnemonic = state.colony_mnemonic.clone();
+        let mut local_auto_generate_private_key = state.auto_generate_private_key;
+        let mut local_auto_generate_colony_mnemonic = state.auto_generate_colony_mnemonic;
+
         ui.vertical(|ui| {
             ui.label(
                 egui::RichText::new("Set up your credentials")
@@ -221,12 +227,12 @@ impl OnboardingWizard {
                     
                     ui.add_space(10.0);
                     
-                    ui.checkbox(&mut state.auto_generate_private_key, "Auto-generate a new private key");
-                    
-                    if !state.auto_generate_private_key {
+                    ui.checkbox(&mut local_auto_generate_private_key, "Auto-generate a new private key");
+
+                    if !local_auto_generate_private_key {
                         ui.add_space(5.0);
                         ui.label("Enter your private key (64 hex characters):");
-                        ui.text_edit_singleline(&mut state.private_key);
+                        ui.text_edit_singleline(&mut local_private_key);
                     }
                 });
             });
@@ -246,12 +252,12 @@ impl OnboardingWizard {
                     
                     ui.add_space(10.0);
                     
-                    ui.checkbox(&mut state.auto_generate_colony_mnemonic, "Auto-generate a new colony mnemonic");
-                    
-                    if !state.auto_generate_colony_mnemonic {
+                    ui.checkbox(&mut local_auto_generate_colony_mnemonic, "Auto-generate a new colony mnemonic");
+
+                    if !local_auto_generate_colony_mnemonic {
                         ui.add_space(5.0);
                         ui.label("Enter your colony mnemonic (12 words):");
-                        ui.text_edit_multiline(&mut state.colony_mnemonic);
+                        ui.text_edit_multiline(&mut local_colony_mnemonic);
                     }
                 });
             });
@@ -266,11 +272,16 @@ impl OnboardingWizard {
 
             // Action buttons
             ui.horizontal(|ui| {
-                if ui.add(theme::primary_button("Continue")).clicked() && !state.is_loading {
-                    // Set loading state immediately to prevent multiple clicks
-                    state.is_loading = true;
-                    state.error_message = None;
+                let should_submit = ui.add(theme::primary_button("Continue")).clicked() && !state.is_loading;
 
+                if should_submit {
+                    // Use the local values that were modified by the UI
+                    let private_key = local_private_key.clone();
+                    let colony_mnemonic = local_colony_mnemonic.clone();
+                    let auto_generate_private_key = local_auto_generate_private_key;
+                    let auto_generate_colony_mnemonic = local_auto_generate_colony_mnemonic;
+
+                    // Don't modify state here - do it in the async task to avoid deadlock
                     wasm_bindgen_futures::spawn_local(async move {
                         // Use a retry mechanism to avoid deadlocks
                         let mut attempts = 0;
@@ -278,6 +289,16 @@ impl OnboardingWizard {
 
                         while attempts < max_attempts {
                             if let Ok(mut state) = onboarding_state().try_write() {
+                                // Set loading state here to avoid UI deadlock
+                                state.is_loading = true;
+                                state.error_message = None;
+
+                                // Set the captured values in state
+                                state.private_key = private_key.clone();
+                                state.colony_mnemonic = colony_mnemonic.clone();
+                                state.auto_generate_private_key = auto_generate_private_key;
+                                state.auto_generate_colony_mnemonic = auto_generate_colony_mnemonic;
+
                                 match state.submit_credentials().await {
                                     Ok(_) => {
                                         log::info!("Credential submission completed successfully");
@@ -327,7 +348,7 @@ impl OnboardingWizard {
         let should_start_initialization = !state.is_loading && !state.colony_initialization_started && state.colony_initialization_progress == 0.0;
 
         if should_start_initialization {
-            state.colony_initialization_started = true; // Set flag immediately to prevent multiple spawns
+            // Don't modify state here - do it in the async task to avoid deadlock
             log::info!("Starting colony initialization auto-start");
 
             // Spawn the async task without holding the lock
@@ -341,6 +362,9 @@ impl OnboardingWizard {
                 while attempts < max_attempts {
                     if let Ok(mut state) = onboarding_state().try_write() {
                         log::info!("Got write lock for colony initialization");
+                        // Set flag here to prevent multiple spawns
+                        state.colony_initialization_started = true;
+
                         match state.initialize_colony().await {
                             Ok(_) => {
                                 log::info!("Colony initialization completed successfully");
@@ -483,7 +507,7 @@ impl OnboardingWizard {
         });
     }
 
-    fn draw_completion(&self, ui: &mut egui::Ui, state: &mut OnboardingState) {
+    fn draw_completion(&self, ui: &mut egui::Ui, _state: &OnboardingState) {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
             
@@ -504,8 +528,12 @@ impl OnboardingWizard {
             ui.add_space(30.0);
 
             if ui.add(theme::success_button("Get Started")).clicked() {
-                // Mark onboarding as completed
-                state.needs_onboarding = false;
+                // Mark onboarding as completed using async task to avoid deadlock
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(mut state) = onboarding_state().try_write() {
+                        state.needs_onboarding = false;
+                    }
+                });
             }
         });
     }

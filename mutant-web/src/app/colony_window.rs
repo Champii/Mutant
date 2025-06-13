@@ -1383,11 +1383,6 @@ impl ColonyWindow {
                                 Some(format!("Refreshed {} pods", refreshed_pods));
                             self.current_progress = 1.0;
                         }
-
-                        _ => {
-                            // Handle other events as needed
-                            log::debug!("Received colony event: {:?}", event.event);
-                        }
                     }
                 }
 
@@ -1956,23 +1951,41 @@ pub fn add_colony_progress_event(
     log::debug!("Adding colony progress event: {:?}", event);
 
     let progress_event = ColonyProgressEvent {
-        event,
+        event: event.clone(),
         operation_id,
     };
 
-    if let Ok(mut events) = COLONY_PROGRESS_EVENTS.lock() {
-        events.push(progress_event);
-        log::debug!(
-            "Colony progress events queue now has {} events",
-            events.len()
-        );
+    // Use try_lock to avoid blocking and potential deadlocks
+    match COLONY_PROGRESS_EVENTS.try_lock() {
+        Ok(mut events) => {
+            events.push(progress_event);
+            log::debug!(
+                "Colony progress events queue now has {} events",
+                events.len()
+            );
 
-        // Keep only the last 100 events to prevent memory growth
-        let len = events.len();
-        if len > 100 {
-            events.drain(0..len - 100);
+            // Keep only the last 100 events to prevent memory growth
+            let len = events.len();
+            if len > 100 {
+                events.drain(0..len - 100);
+            }
         }
-    } else {
-        log::error!("Failed to lock COLONY_PROGRESS_EVENTS mutex");
+        Err(std::sync::TryLockError::WouldBlock) => {
+            log::debug!("COLONY_PROGRESS_EVENTS mutex is busy, skipping event: {:?}", event);
+            // Don't panic, just skip this event
+        }
+        Err(std::sync::TryLockError::Poisoned(e)) => {
+            log::error!("COLONY_PROGRESS_EVENTS mutex is poisoned: {}", e);
+            // Try to recover the mutex and continue
+            match e.into_inner() {
+                mut events => {
+                    events.push(ColonyProgressEvent {
+                        event,
+                        operation_id: None, // operation_id was moved above
+                    });
+                    log::debug!("Recovered from poisoned mutex and added event");
+                }
+            }
+        }
     }
 }

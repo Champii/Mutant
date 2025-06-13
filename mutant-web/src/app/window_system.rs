@@ -295,15 +295,6 @@ impl WindowSystem {
             WindowType::Fs(_) => [300.0, 600.0],
             WindowType::Stats(_) => [500.0, 600.0],
             WindowType::Colony(_) => [1000.0, 700.0], // Larger size to match screenshot proportions
-            // WindowType::Overview(_) => [300.0, 600.0],
-            // WindowType::Ships(_) => [300.0, 600.0],
-            // WindowType::Bases(_) => [600.0, 400.0],
-            // WindowType::Research(_) => [600.0, 400.0],
-            // WindowType::Flights(_) => [600.0, 500.0],
-            // WindowType::Orders(_) => [300.0, 400.0],
-            // WindowType::Trades(_) => [300.0, 400.0],
-            // WindowType::Blueprints(_) => [300.0, 500.0],
-            _ => [300.0, 400.0],
         }
     }
 
