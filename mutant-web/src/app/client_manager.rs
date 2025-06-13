@@ -1307,6 +1307,17 @@ pub async fn reconnect() -> Result<(), String> {
     match CLIENT_COMMAND_SENDER.unbounded_send(ClientCommand::Reconnect) {
         Ok(_) => {
             info!("Reconnect command sent to client manager");
+
+            // Wait a moment for the reconnection to complete
+            let promise = js_sys::Promise::new(&mut |resolve, _| {
+                web_sys::window()
+                    .unwrap()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 2000)
+                    .unwrap();
+            });
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+
+            info!("Reconnect request completed");
             Ok(())
         },
         Err(e) => {

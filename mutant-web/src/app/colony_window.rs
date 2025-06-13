@@ -1965,25 +1965,52 @@ pub fn is_colony_operation_in_progress() -> bool {
         }
 
         // Look for recent initialization events
-        for event in events.iter().rev().take(10) { // Check last 10 events
+        // IMPORTANT: Don't immediately return false on InitializationCompleted from onboarding
+        // because the daemon might still be doing real colony work
+        let mut found_completion = false;
+        let mut found_active_operation = false;
+
+        for event in events.iter().rev().take(20) { // Check last 20 events for better context
             log::debug!("is_colony_operation_in_progress: checking event: {:?}", event.event);
             match &event.event {
                 mutant_protocol::ColonyEvent::InitializationStarted => {
-                    log::debug!("is_colony_operation_in_progress: found InitializationStarted, returning true");
-                    return true;
+                    found_active_operation = true;
                 }
                 mutant_protocol::ColonyEvent::InitializationCompleted => {
-                    log::debug!("is_colony_operation_in_progress: found InitializationCompleted, returning false");
-                    return false;
+                    // Only consider it completed if it's from the daemon's actual work
+                    // Onboarding completion doesn't mean the daemon is done
+                    if event.operation_id.as_ref().map_or(false, |id| id == "onboarding_init") {
+                        log::debug!("is_colony_operation_in_progress: found onboarding completion, but daemon might still be working");
+                        // Don't set found_completion = true for onboarding completion
+                    } else {
+                        found_completion = true;
+                    }
                 }
                 mutant_protocol::ColonyEvent::DataStoreInitStarted |
                 mutant_protocol::ColonyEvent::KeyStoreInitStarted |
                 mutant_protocol::ColonyEvent::KeyDerivationStarted |
                 mutant_protocol::ColonyEvent::GraphInitStarted |
                 mutant_protocol::ColonyEvent::UserPodCheckStarted |
-                mutant_protocol::ColonyEvent::UserPodCreationStarted => return true,
+                mutant_protocol::ColonyEvent::UserPodCreationStarted => {
+                    found_active_operation = true;
+                }
+                mutant_protocol::ColonyEvent::Progress { .. } => {
+                    // Any progress event indicates ongoing work
+                    found_active_operation = true;
+                }
                 _ => continue,
             }
+        }
+
+        // Show modal if we found active operations and no real completion
+        if found_active_operation && !found_completion {
+            log::debug!("is_colony_operation_in_progress: found active operations without real completion, returning true");
+            return true;
+        }
+
+        if found_completion {
+            log::debug!("is_colony_operation_in_progress: found real completion, returning false");
+            return false;
         }
     }
 
@@ -1994,10 +2021,17 @@ pub fn is_colony_operation_in_progress() -> bool {
 /// Get current colony operation progress information
 pub fn get_colony_operation_progress() -> (f32, Option<String>) {
     if let Ok(events) = COLONY_PROGRESS_EVENTS.try_lock() {
+        let events_count = events.len();
+        log::debug!("get_colony_operation_progress: checking {} events in COLONY_PROGRESS_EVENTS", events_count);
+
         // Look for the most recent progress information
         for event in events.iter().rev() {
             match &event.event {
                 mutant_protocol::ColonyEvent::InitializationStarted => {
+                    // If this is from onboarding, show a reasonable starting progress
+                    if event.operation_id.as_ref().map_or(false, |id| id == "onboarding_init") {
+                        return (0.1, Some("Starting colony initialization...".to_string()));
+                    }
                     return (0.0, Some("Colony initialization started...".to_string()));
                 }
                 mutant_protocol::ColonyEvent::DataStoreInitStarted => {
@@ -2037,6 +2071,12 @@ pub fn get_colony_operation_progress() -> (f32, Option<String>) {
                     return (0.98, Some("User pod check completed".to_string()));
                 }
                 mutant_protocol::ColonyEvent::InitializationCompleted => {
+                    // Only consider it completed if it's from the daemon's actual work
+                    // Ignore onboarding completion events
+                    if event.operation_id.as_ref().map_or(false, |id| id == "onboarding_init") {
+                        log::debug!("get_colony_operation_progress: ignoring onboarding completion, looking for real daemon completion");
+                        continue;
+                    }
                     return (1.0, Some("Colony initialization completed!".to_string()));
                 }
                 mutant_protocol::ColonyEvent::Progress { operation, message, current, total } => {
@@ -2055,6 +2095,40 @@ pub fn get_colony_operation_progress() -> (f32, Option<String>) {
             }
         }
     }
+
+    // If no events in the colony progress queue, check the onboarding system's colony state
+    // This provides a fallback when WebSocket progress tracking isn't working
+    log::debug!("get_colony_operation_progress: no events found, checking onboarding colony state");
+
+    if let Ok(colony_state) = crate::app::onboarding::colony_init_state().try_read() {
+        if colony_state.is_initializing {
+            // If onboarding says colony is initializing, show progress based on time
+            // This gives a better user experience when daemon operations are happening
+            let progress = if colony_state.progress >= 1.0 {
+                // If onboarding is complete but we're still here, daemon is probably working
+                0.7 // Show 70% to indicate ongoing daemon operations
+            } else {
+                colony_state.progress.max(0.1) // At least 10% if initializing
+            };
+
+            let status = if colony_state.progress >= 1.0 {
+                Some("Creating user pod...".to_string()) // More accurate status for daemon work
+            } else {
+                colony_state.status.clone()
+            };
+
+            log::debug!("get_colony_operation_progress: using onboarding colony state: progress={:.2}, status={:?}",
+                       progress, status);
+            return (progress, status);
+        } else if colony_state.progress > 0.0 && colony_state.progress < 1.0 {
+            // Show partial progress even if not actively initializing
+            log::debug!("get_colony_operation_progress: using onboarding partial progress: progress={:.2}, status={:?}",
+                       colony_state.progress, colony_state.status);
+            return (colony_state.progress, colony_state.status.clone());
+        }
+    }
+
+    log::debug!("get_colony_operation_progress: no progress information available, returning (0.0, None)");
     (0.0, None)
 }
 

@@ -217,25 +217,28 @@ impl OnboardingState {
                     // Step 4: Reload credentials without restarting the daemon
                     match self.reload_credentials().await {
                         Ok(_) => {
-                            self.colony_initialization_progress = 0.9;
-                            self.colony_initialization_status = Some("Finalizing setup...".to_string());
+                            self.colony_initialization_progress = 0.7;
+                            self.colony_initialization_status = Some("Credentials reloaded, waiting for daemon colony initialization...".to_string());
 
                             // Update global colony initialization state
-                            update_colony_initialization_progress(0.9, Some("Finalizing setup...".to_string()));
+                            update_colony_initialization_progress(0.7, Some("Credentials reloaded, waiting for daemon colony initialization...".to_string()));
 
-                            // Step 5: Finalize setup
-                            log::info!("Step 5: Finalizing setup");
-                            self.colony_initialization_status = Some("Setup completed successfully!".to_string());
+                            // Step 5: Wait for daemon to complete colony initialization
+                            log::info!("Step 5: Waiting for daemon colony initialization to complete");
+                            self.colony_initialization_progress = 0.8;
+                            self.colony_initialization_status = Some("Daemon is initializing colony system...".to_string());
 
+                            // Update global colony initialization state
+                            update_colony_initialization_progress(0.8, Some("Daemon is initializing colony system...".to_string()));
+
+                            // Wait for the daemon to complete its colony initialization
+                            // The colony modal will show the real progress from the daemon
+                            // We'll mark onboarding as complete but keep colony init active
                             self.current_step = OnboardingStep::Completed;
                             self.needs_onboarding = false; // Mark onboarding as fully completed
-                            self.colony_initialization_progress = 1.0;
                             self.is_loading = false;
 
-                            // Update global colony initialization state - completed
-                            update_colony_initialization_progress(1.0, Some("Setup completed successfully!".to_string()));
-
-                            log::info!("Onboarding completed successfully - credentials reloaded and needs_onboarding set to false");
+                            log::info!("Onboarding completed successfully - daemon will continue colony initialization in background");
                             Ok(())
                         }
                         Err(e) => {
@@ -327,7 +330,26 @@ impl OnboardingState {
         match ctx.reload_credentials().await {
             Ok(response) => {
                 if response.success {
-                    log::info!("Credential reload initiated successfully");
+                    log::info!("Credential reload initiated successfully, waiting for daemon to process...");
+
+                    // Wait a moment for the daemon to process the reload
+                    let promise = js_sys::Promise::new(&mut |resolve, _| {
+                        web_sys::window()
+                            .unwrap()
+                            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 3000)
+                            .unwrap();
+                    });
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+
+                    // Force a WebSocket reconnection to ensure we receive colony progress events
+                    log::info!("Forcing WebSocket reconnection after credential reload...");
+                    if let Err(e) = crate::app::client_manager::reconnect().await {
+                        log::warn!("Failed to reconnect WebSocket after credential reload: {}", e);
+                        // Don't fail the operation, just log the warning
+                    } else {
+                        log::info!("WebSocket reconnection completed successfully");
+                    }
+
                     Ok(())
                 } else {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
@@ -555,55 +577,65 @@ pub fn reset_colony_initialization_state() {
 }
 
 /// Handle colony progress events from the daemon
-pub fn handle_daemon_colony_progress(event: mutant_protocol::ColonyEvent, _operation_id: Option<String>) {
+pub fn handle_daemon_colony_progress(event: mutant_protocol::ColonyEvent, operation_id: Option<String>) {
     use mutant_protocol::ColonyEvent;
 
-    log::debug!("Handling daemon colony progress event: {:?}", event);
+    log::debug!("Handling daemon colony progress event: {:?} (operation_id: {:?})", event, operation_id);
 
     // Map colony events to progress and status
     let (progress, status, is_initializing, is_error) = match &event {
         // Initialization events
         ColonyEvent::InitializationStarted => {
-            (0.0, Some("Colony initialization started...".to_string()), true, false)
+            // When daemon starts colony initialization, ensure our state reflects this
+            start_colony_initialization(Some("Daemon colony initialization started...".to_string()));
+            (0.1, Some("Daemon colony initialization started...".to_string()), true, false)
         },
         ColonyEvent::DataStoreInitStarted => {
-            (0.1, Some("Initializing data store...".to_string()), true, false)
+            (0.2, Some("Initializing data store...".to_string()), true, false)
         },
         ColonyEvent::DataStoreInitCompleted => {
-            (0.2, Some("Data store initialized".to_string()), true, false)
+            (0.3, Some("Data store initialized".to_string()), true, false)
         },
         ColonyEvent::KeyStoreInitStarted => {
-            (0.3, Some("Initializing key store...".to_string()), true, false)
+            (0.4, Some("Initializing key store...".to_string()), true, false)
         },
         ColonyEvent::KeyStoreInitCompleted => {
-            (0.4, Some("Key store initialized".to_string()), true, false)
+            (0.5, Some("Key store initialized".to_string()), true, false)
         },
         ColonyEvent::KeyDerivationStarted => {
-            (0.5, Some("Deriving colony keys...".to_string()), true, false)
+            (0.6, Some("Deriving colony keys...".to_string()), true, false)
         },
         ColonyEvent::KeyDerivationCompleted { pod_address } => {
-            (0.6, Some(format!("Keys derived for pod: {}", pod_address)), true, false)
+            (0.7, Some(format!("Keys derived for pod: {}", pod_address)), true, false)
         },
         ColonyEvent::GraphInitStarted => {
-            (0.7, Some("Initializing graph database...".to_string()), true, false)
+            (0.8, Some("Initializing graph database...".to_string()), true, false)
         },
         ColonyEvent::GraphInitCompleted => {
-            (0.8, Some("Graph database initialized".to_string()), true, false)
+            (0.85, Some("Graph database initialized".to_string()), true, false)
         },
         ColonyEvent::UserPodCheckStarted => {
-            (0.85, Some("Checking user pod...".to_string()), true, false)
+            (0.9, Some("Checking user pod...".to_string()), true, false)
         },
         ColonyEvent::UserPodCreationStarted => {
-            (0.9, Some("Creating user pod...".to_string()), true, false)
+            (0.95, Some("Creating user pod...".to_string()), true, false)
         },
         ColonyEvent::UserPodCreationCompleted { pod_address } => {
-            (0.95, Some(format!("User pod created: {}", pod_address)), true, false)
+            (0.98, Some(format!("User pod created: {}", pod_address)), true, false)
         },
         ColonyEvent::UserPodCheckCompleted => {
-            (0.98, Some("User pod check completed".to_string()), true, false)
+            (0.99, Some("User pod check completed".to_string()), true, false)
         },
         ColonyEvent::InitializationCompleted => {
-            (1.0, Some("Colony initialization completed!".to_string()), false, false)
+            // Only complete if this is from the daemon's actual work, not onboarding
+            if operation_id.as_ref().map_or(true, |id| id != "onboarding_init") {
+                complete_colony_initialization();
+                (1.0, Some("Colony initialization completed!".to_string()), false, false)
+            } else {
+                // This is from onboarding completion, don't mark as fully complete
+                log::debug!("Ignoring onboarding completion event, waiting for daemon completion");
+                return;
+            }
         },
 
         // Error events

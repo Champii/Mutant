@@ -29,19 +29,16 @@ impl ColonyInitModal {
         // Also check the progress to see what we have
         let (progress, status) = crate::app::colony_window::get_colony_operation_progress();
 
-        // TEMPORARY: Force show modal for testing if we detect any colony activity
-        // Check if we're in the middle of onboarding completion but colony operations are happening
-        // Also show if we have a "completed" status but progress is 100% (recent completion)
-        let force_show = !crate::app::onboarding::is_onboarding_active() &&
-                        progress >= 1.0 &&
-                        status.as_ref().map_or(false, |s| s.contains("initialization completed") || s.contains("Colony initialization completed"));
+        // Also check if onboarding colony initialization is active
+        let onboarding_colony_active = crate::app::onboarding::is_colony_initializing();
 
-        let final_should_show = should_show || force_show;
+        // Show the modal if colony operations are in progress OR onboarding colony init is active
+        let final_should_show = should_show || onboarding_colony_active;
 
         // Only log when state changes to reduce spam
         if final_should_show != self.last_should_show || (progress - self.last_progress).abs() > 0.01 {
-            log::info!("Colony init modal: should_show={}, force_show={}, final_should_show={}, progress={:.2}, status={:?}",
-                      should_show, force_show, final_should_show, progress, status);
+            log::info!("Colony init modal: should_show={}, onboarding_active={}, final_should_show={}, progress={:.2}, status={:?}",
+                      should_show, onboarding_colony_active, final_should_show, progress, status);
             self.last_should_show = final_should_show;
             self.last_progress = progress;
         }
@@ -117,6 +114,13 @@ impl ColonyInitModal {
             if let Some(status) = status {
                 ui.label(
                     egui::RichText::new(status)
+                        .font(FontId::proportional(14.0))
+                        .color(MutantColors::TEXT_SECONDARY)
+                );
+            } else if progress <= 0.1 {
+                // If we have very low progress and no status, show a helpful message
+                ui.label(
+                    egui::RichText::new("Connecting to daemon and starting initialization...")
                         .font(FontId::proportional(14.0))
                         .color(MutantColors::TEXT_SECONDARY)
                 );
