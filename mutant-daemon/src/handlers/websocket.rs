@@ -19,6 +19,9 @@ pub async fn handle_ws(ws: WebSocket, mutant: Arc<MutAnt>, tasks: TaskMap, activ
 
     log::info!("WebSocket client connected");
 
+    // Check if colony initialization is needed and start it with progress tracking
+    check_and_start_colony_initialization(mutant.clone(), update_tx.clone()).await;
+
     // Task to listen for updates from spawned tasks and send them to the client
     let update_forwarder = tokio::spawn(async move {
         while let Some(response) = update_rx.recv().await {
@@ -128,4 +131,64 @@ pub async fn handle_ws(ws: WebSocket, mutant: Arc<MutAnt>, tasks: TaskMap, activ
     // Ensure the forwarder task is cleaned up when the receive loop ends
     update_forwarder.abort();
     log::debug!("WebSocket connection handler finished.");
+}
+
+/// Check if colony initialization is needed and start it with progress tracking
+async fn check_and_start_colony_initialization(mutant: Arc<MutAnt>, update_tx: mpsc::UnboundedSender<Response>) {
+    // Check if colony manager is already initialized
+    if super::colony::is_colony_initialized() {
+        log::debug!("Colony manager already initialized, skipping initialization check");
+        return;
+    }
+
+    // Check if colony initialization is already in progress
+    if super::colony::is_colony_initialization_in_progress() {
+        log::debug!("Colony initialization already in progress, skipping duplicate initialization");
+        return;
+    }
+
+    log::info!("Colony manager not initialized, starting initialization with progress tracking for WebSocket client");
+
+    // Get the stored initialization parameters
+    let init_params = match super::colony::get_colony_init_params() {
+        Some(params) => params,
+        None => {
+            log::warn!("Colony initialization parameters not set, cannot initialize colony for WebSocket client");
+            return;
+        }
+    };
+
+    let (network_choice, private_key_hex) = init_params;
+
+    // Check if we have the necessary credentials
+    let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
+    if private_key_hex.is_none() && !has_colony_mnemonic {
+        log::debug!("No private key or colony mnemonic available, skipping colony initialization");
+        return;
+    }
+
+    // Get wallet from MutAnt
+    let wallet = match mutant.get_wallet().await {
+        Ok(wallet) => wallet,
+        Err(e) => {
+            log::warn!("Failed to get wallet for colony initialization: {}", e);
+            return;
+        }
+    };
+
+    // Start colony initialization with progress tracking in a background task
+    tokio::spawn(async move {
+        log::info!("Starting colony initialization with progress tracking for WebSocket client");
+
+        if let Err(e) = super::colony::init_colony_manager_with_progress(
+            wallet,
+            network_choice,
+            private_key_hex,
+            update_tx
+        ).await {
+            log::error!("Failed to initialize colony manager with progress tracking: {}", e);
+        } else {
+            log::info!("Colony manager initialized successfully with progress tracking");
+        }
+    });
 }

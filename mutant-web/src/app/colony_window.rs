@@ -1943,6 +1943,110 @@ impl ColonyWindow {
     }
 }
 
+/// Check if any colony operation is currently in progress
+pub fn is_colony_operation_in_progress() -> bool {
+    // During onboarding, always show the modal if we're in colony initialization step
+    // This covers the entire colony initialization process, including initial pod creation
+    if crate::app::onboarding::is_colony_initializing() {
+        log::debug!("is_colony_operation_in_progress: colony initialization in progress, returning true");
+        return true;
+    }
+
+    // Check if there are recent colony initialization events
+    if let Ok(events) = COLONY_PROGRESS_EVENTS.try_lock() {
+        log::debug!("is_colony_operation_in_progress: checking {} events", events.len());
+        // Look for recent initialization events
+        for event in events.iter().rev().take(10) { // Check last 10 events
+            log::debug!("is_colony_operation_in_progress: checking event: {:?}", event.event);
+            match &event.event {
+                mutant_protocol::ColonyEvent::InitializationStarted => {
+                    log::debug!("is_colony_operation_in_progress: found InitializationStarted, returning true");
+                    return true;
+                }
+                mutant_protocol::ColonyEvent::InitializationCompleted => {
+                    log::debug!("is_colony_operation_in_progress: found InitializationCompleted, returning false");
+                    return false;
+                }
+                mutant_protocol::ColonyEvent::DataStoreInitStarted |
+                mutant_protocol::ColonyEvent::KeyStoreInitStarted |
+                mutant_protocol::ColonyEvent::KeyDerivationStarted |
+                mutant_protocol::ColonyEvent::GraphInitStarted |
+                mutant_protocol::ColonyEvent::UserPodCheckStarted |
+                mutant_protocol::ColonyEvent::UserPodCreationStarted => return true,
+                _ => continue,
+            }
+        }
+    }
+    false
+}
+
+/// Get current colony operation progress information
+pub fn get_colony_operation_progress() -> (f32, Option<String>) {
+    if let Ok(events) = COLONY_PROGRESS_EVENTS.try_lock() {
+        // Look for the most recent progress information
+        for event in events.iter().rev() {
+            match &event.event {
+                mutant_protocol::ColonyEvent::InitializationStarted => {
+                    return (0.0, Some("Colony initialization started...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::DataStoreInitStarted => {
+                    return (0.1, Some("Initializing data store...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::DataStoreInitCompleted => {
+                    return (0.2, Some("Data store initialized".to_string()));
+                }
+                mutant_protocol::ColonyEvent::KeyStoreInitStarted => {
+                    return (0.3, Some("Initializing key store...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::KeyStoreInitCompleted => {
+                    return (0.4, Some("Key store initialized".to_string()));
+                }
+                mutant_protocol::ColonyEvent::KeyDerivationStarted => {
+                    return (0.5, Some("Deriving colony keys...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::KeyDerivationCompleted { pod_address } => {
+                    return (0.6, Some(format!("Keys derived for pod: {}", pod_address)));
+                }
+                mutant_protocol::ColonyEvent::GraphInitStarted => {
+                    return (0.7, Some("Initializing graph database...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::GraphInitCompleted => {
+                    return (0.8, Some("Graph database initialized".to_string()));
+                }
+                mutant_protocol::ColonyEvent::UserPodCheckStarted => {
+                    return (0.85, Some("Checking user pod...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::UserPodCreationStarted => {
+                    return (0.9, Some("Creating user pod...".to_string()));
+                }
+                mutant_protocol::ColonyEvent::UserPodCreationCompleted { pod_address } => {
+                    return (0.95, Some(format!("User pod created: {}", pod_address)));
+                }
+                mutant_protocol::ColonyEvent::UserPodCheckCompleted => {
+                    return (0.98, Some("User pod check completed".to_string()));
+                }
+                mutant_protocol::ColonyEvent::InitializationCompleted => {
+                    return (1.0, Some("Colony initialization completed!".to_string()));
+                }
+                mutant_protocol::ColonyEvent::Progress { operation, message, current, total } => {
+                    let progress = if let (Some(current), Some(total)) = (current, total) {
+                        if *total > 0 {
+                            (*current as f32) / (*total as f32)
+                        } else {
+                            0.5
+                        }
+                    } else {
+                        0.5
+                    };
+                    return (progress, Some(format!("{}: {}", operation, message)));
+                }
+                _ => continue,
+            }
+        }
+    }
+    (0.0, None)
+}
+
 /// Add a colony progress event to the global state for UI updates
 pub fn add_colony_progress_event(
     event: mutant_protocol::ColonyEvent,

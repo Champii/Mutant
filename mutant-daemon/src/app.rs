@@ -386,28 +386,38 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
     // Store colony initialization parameters for later use when WebSocket clients connect
     crate::handlers::colony::set_colony_init_params(network_choice, actual_private_key.clone()).await;
 
-    // Initialize colony manager at startup if we have a wallet (not in public-only mode)
+    // Store colony initialization parameters for on-demand initialization
     if !is_public_only {
+        log::info!("Storing colony initialization parameters for on-demand initialization...");
+        crate::handlers::colony::set_colony_init_params(network_choice, actual_private_key.clone()).await;
+
         log::info!("Initializing colony manager at daemon startup...");
 
         // Get wallet from MutAnt for colony initialization
         match mutant.get_wallet().await {
             Ok(wallet) => {
-                // Spawn colony manager initialization as async task to avoid blocking daemon startup
-                let wallet_clone = wallet.clone();
-                let network_choice_clone = network_choice;
-                let private_key_clone = actual_private_key.clone();
+                // Check if colony manager is already initialized to avoid duplicate initialization
+                if crate::handlers::colony::is_colony_initialized() {
+                    log::info!("Colony manager already initialized, skipping startup initialization");
+                } else {
+                    // Spawn colony manager initialization as async task to avoid blocking daemon startup
+                    let wallet_clone = wallet.clone();
+                    let network_choice_clone = network_choice;
+                    let private_key_clone = actual_private_key.clone();
 
-                tokio::spawn(async move {
-                    match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
-                        Ok(_) => {
-                            log::info!("Colony manager initialized successfully at daemon startup");
+                    tokio::spawn(async move {
+                        // Use the regular init_colony_manager for startup (no WebSocket clients yet)
+                        // Progress will be tracked when WebSocket clients connect if initialization is still ongoing
+                        match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
+                            Ok(_) => {
+                                log::info!("Colony manager initialized successfully at daemon startup");
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to initialize colony manager at startup: {}. Colony features will be available on-demand.", e);
+                            }
                         }
-                        Err(e) => {
-                            log::warn!("Failed to initialize colony manager at startup: {}. Colony features will be available on-demand.", e);
-                        }
-                    }
-                });
+                    });
+                }
             }
             Err(e) => {
                 log::warn!("Failed to get wallet for colony initialization: {}. Colony features will be available on-demand.", e);

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::OnceCell;
 use mutant_lib::config::NetworkChoice;
 
@@ -36,6 +37,9 @@ static COLONY_MANAGER: OnceCell<Arc<ColonyManager>> = OnceCell::const_new();
 // Global colony initialization parameters
 static COLONY_INIT_PARAMS: OnceCell<(NetworkChoice, Option<String>)> = OnceCell::const_new();
 
+// Global flag to track if colony initialization is in progress
+static COLONY_INITIALIZATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 /// Store colony initialization parameters for later use
 pub async fn set_colony_init_params(network_choice: NetworkChoice, private_key_hex: Option<String>) {
     if let Err(_) = COLONY_INIT_PARAMS.set((network_choice, private_key_hex)) {
@@ -45,33 +49,59 @@ pub async fn set_colony_init_params(network_choice: NetworkChoice, private_key_h
     }
 }
 
+/// Get colony initialization parameters
+pub fn get_colony_init_params() -> Option<(NetworkChoice, Option<String>)> {
+    COLONY_INIT_PARAMS.get().cloned()
+}
+
+/// Check if colony initialization is currently in progress
+pub fn is_colony_initialization_in_progress() -> bool {
+    COLONY_INITIALIZATION_IN_PROGRESS.load(Ordering::Relaxed)
+}
+
+/// Set colony initialization progress flag
+fn set_colony_initialization_in_progress(in_progress: bool) {
+    COLONY_INITIALIZATION_IN_PROGRESS.store(in_progress, Ordering::Relaxed);
+    log::debug!("Colony initialization in progress flag set to: {}", in_progress);
+}
+
 /// Initialize the global colony manager
 pub async fn init_colony_manager(wallet: autonomi::Wallet, network_choice: NetworkChoice, private_key_hex: Option<String>) -> Result<(), DaemonError> {
     log::info!("Starting colony manager initialization");
 
-    let manager_opt = ColonyManager::new(wallet, network_choice, private_key_hex).await?;
+    // Set initialization in progress flag
+    set_colony_initialization_in_progress(true);
 
-    let manager = match manager_opt {
-        Some(manager) => manager,
-        None => {
-            log::info!("Colony initialization skipped due to missing private key and COLONY_MNEMONIC");
-            return Ok(());
+    let result = async {
+        let manager_opt = ColonyManager::new(wallet, network_choice, private_key_hex).await?;
+
+        let manager = match manager_opt {
+            Some(manager) => manager,
+            None => {
+                log::info!("Colony initialization skipped due to missing private key and COLONY_MNEMONIC");
+                return Ok(());
+            }
+        };
+
+        // Ensure the user's pod exists on the network
+        log::info!("Ensuring user pod exists during initialization");
+        if let Err(e) = manager.ensure_user_pod_exists().await {
+            log::warn!("Failed to ensure user pod exists during initialization: {}. Pod will be created when needed.", e);
+        } else {
+            log::info!("User pod verified/created successfully during initialization");
         }
-    };
 
-    // Ensure the user's pod exists on the network
-    log::info!("Ensuring user pod exists during initialization");
-    if let Err(e) = manager.ensure_user_pod_exists().await {
-        log::warn!("Failed to ensure user pod exists during initialization: {}. Pod will be created when needed.", e);
-    } else {
-        log::info!("User pod verified/created successfully during initialization");
-    }
+        COLONY_MANAGER.set(Arc::new(manager))
+            .map_err(|_| DaemonError::ColonyError("Colony manager already initialized".to_string()))?;
 
-    COLONY_MANAGER.set(Arc::new(manager))
-        .map_err(|_| DaemonError::ColonyError("Colony manager already initialized".to_string()))?;
+        log::info!("Colony manager initialized successfully");
+        Ok(())
+    }.await;
 
-    log::info!("Colony manager initialized successfully");
-    Ok(())
+    // Clear initialization in progress flag
+    set_colony_initialization_in_progress(false);
+
+    result
 }
 
 /// Initialize the global colony manager with progress updates
@@ -84,49 +114,59 @@ pub async fn init_colony_manager_with_progress(
 ) -> Result<(), DaemonError> {
     log::info!("Starting colony manager initialization with progress tracking");
 
+    // Set initialization in progress flag
+    set_colony_initialization_in_progress(true);
+
     // Send progress event: initialization started
     send_colony_progress(&update_tx, ColonyEvent::InitializationStarted, None);
 
-    let manager_opt = ColonyManager::new_with_progress(wallet, network_choice, private_key_hex, update_tx.clone()).await?;
+    let result = async {
+        let manager_opt = ColonyManager::new_with_progress(wallet, network_choice, private_key_hex, update_tx.clone()).await?;
 
-    let manager = match manager_opt {
-        Some(manager) => manager,
-        None => {
-            log::info!("Colony initialization skipped due to missing private key and COLONY_MNEMONIC");
-            // Send progress event: initialization skipped
-            send_colony_progress(&update_tx, ColonyEvent::InitializationCompleted, Some("Skipped due to missing credentials".to_string()));
-            return Ok(());
+        let manager = match manager_opt {
+            Some(manager) => manager,
+            None => {
+                log::info!("Colony initialization skipped due to missing private key and COLONY_MNEMONIC");
+                // Send progress event: initialization skipped
+                send_colony_progress(&update_tx, ColonyEvent::InitializationCompleted, Some("Skipped due to missing credentials".to_string()));
+                return Ok(());
+            }
+        };
+
+        // Send progress event: user pod check started
+        send_colony_progress(&update_tx, ColonyEvent::UserPodCheckStarted, None);
+
+        // Ensure the user's pod exists on the network
+        log::info!("Ensuring user pod exists during initialization");
+        if let Err(e) = manager.ensure_user_pod_exists_with_progress(update_tx.clone()).await {
+            log::warn!("Failed to ensure user pod exists during initialization: {}. Pod will be created when needed.", e);
+
+            // Send progress event: operation failed
+            send_colony_progress(&update_tx, ColonyEvent::OperationFailed {
+                operation: "user_pod_check".to_string(),
+                error: e.to_string()
+            }, None);
+        } else {
+            log::info!("User pod verified/created successfully during initialization");
+
+            // Send progress event: user pod check completed
+            send_colony_progress(&update_tx, ColonyEvent::UserPodCheckCompleted, None);
         }
-    };
 
-    // Send progress event: user pod check started
-    send_colony_progress(&update_tx, ColonyEvent::UserPodCheckStarted, None);
+        COLONY_MANAGER.set(Arc::new(manager))
+            .map_err(|_| DaemonError::ColonyError("Colony manager already initialized".to_string()))?;
 
-    // Ensure the user's pod exists on the network
-    log::info!("Ensuring user pod exists during initialization");
-    if let Err(e) = manager.ensure_user_pod_exists_with_progress(update_tx.clone()).await {
-        log::warn!("Failed to ensure user pod exists during initialization: {}. Pod will be created when needed.", e);
+        // Send progress event: initialization completed
+        send_colony_progress(&update_tx, ColonyEvent::InitializationCompleted, None);
 
-        // Send progress event: operation failed
-        send_colony_progress(&update_tx, ColonyEvent::OperationFailed {
-            operation: "user_pod_check".to_string(),
-            error: e.to_string()
-        }, None);
-    } else {
-        log::info!("User pod verified/created successfully during initialization");
+        log::info!("Colony manager initialized successfully");
+        Ok(())
+    }.await;
 
-        // Send progress event: user pod check completed
-        send_colony_progress(&update_tx, ColonyEvent::UserPodCheckCompleted, None);
-    }
+    // Clear initialization in progress flag
+    set_colony_initialization_in_progress(false);
 
-    COLONY_MANAGER.set(Arc::new(manager))
-        .map_err(|_| DaemonError::ColonyError("Colony manager already initialized".to_string()))?;
-
-    // Send progress event: initialization completed
-    send_colony_progress(&update_tx, ColonyEvent::InitializationCompleted, None);
-
-    log::info!("Colony manager initialized successfully");
-    Ok(())
+    result
 }
 
 /// Initialize colony manager on-demand with progress events

@@ -563,7 +563,11 @@ impl MutantClient {
                 #[cfg(target_arch = "wasm32")]
                 {
                     if let Some(callback) = COLONY_PROGRESS_CALLBACK.get() {
+                        info!("CLIENT: Calling colony progress callback for event: {:?}", progress_response.event);
                         callback(progress_response.event, progress_response.operation_id);
+                        info!("CLIENT: Colony progress callback completed");
+                    } else {
+                        warn!("CLIENT: Colony progress callback not set! Event will be ignored: {:?}", progress_response.event);
                     }
                 }
             },

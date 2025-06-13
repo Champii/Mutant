@@ -6,6 +6,7 @@ use crate::app::context::context;
 
 
 pub mod wizard;
+pub mod colony_modal;
 
 /// Onboarding state management
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -183,11 +184,17 @@ impl OnboardingState {
         self.colony_initialization_progress = 0.1;
         self.colony_initialization_status = Some("Starting colony initialization...".to_string());
 
+        // Update global colony initialization state
+        update_colony_initialization_progress(0.1, Some("Starting colony initialization...".to_string()));
+
         // Step 2: Initialize colony
         log::info!("Step 2: Sending colony initialization request");
         let ctx = context();
         self.colony_initialization_progress = 0.2;
         self.colony_initialization_status = Some("Initializing colony system...".to_string());
+
+        // Update global colony initialization state
+        update_colony_initialization_progress(0.2, Some("Initializing colony system...".to_string()));
 
         match ctx.initialize_colony().await {
             Ok(response) => {
@@ -196,16 +203,25 @@ impl OnboardingState {
                     self.colony_initialization_status = Some("Colony initialization completed! Preparing credential reload...".to_string());
                     log::info!("Colony initialization completed successfully, now reloading credentials");
 
+                    // Update global colony initialization state
+                    update_colony_initialization_progress(0.6, Some("Colony initialization completed! Preparing credential reload...".to_string()));
+
                     // Step 3: Reload credentials (simplified)
                     log::info!("Step 3: Reloading credentials");
                     self.colony_initialization_progress = 0.7;
                     self.colony_initialization_status = Some("Reloading credentials...".to_string());
+
+                    // Update global colony initialization state
+                    update_colony_initialization_progress(0.7, Some("Reloading credentials...".to_string()));
 
                     // Step 4: Reload credentials without restarting the daemon
                     match self.reload_credentials().await {
                         Ok(_) => {
                             self.colony_initialization_progress = 0.9;
                             self.colony_initialization_status = Some("Finalizing setup...".to_string());
+
+                            // Update global colony initialization state
+                            update_colony_initialization_progress(0.9, Some("Finalizing setup...".to_string()));
 
                             // Step 5: Finalize setup
                             log::info!("Step 5: Finalizing setup");
@@ -215,6 +231,10 @@ impl OnboardingState {
                             self.needs_onboarding = false; // Mark onboarding as fully completed
                             self.colony_initialization_progress = 1.0;
                             self.is_loading = false;
+
+                            // Update global colony initialization state - completed
+                            update_colony_initialization_progress(1.0, Some("Setup completed successfully!".to_string()));
+
                             log::info!("Onboarding completed successfully - credentials reloaded and needs_onboarding set to false");
                             Ok(())
                         }
@@ -226,6 +246,10 @@ impl OnboardingState {
                             self.colony_initialization_progress = 1.0;
                             self.colony_initialization_status = Some("Completed (credential reload had issues)".to_string());
                             self.is_loading = false;
+
+                            // Update global colony initialization state - completed with warning
+                            update_colony_initialization_progress(1.0, Some("Completed (credential reload had issues)".to_string()));
+
                             Ok(())
                         }
                     }
@@ -233,6 +257,10 @@ impl OnboardingState {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
                     self.error_message = Some(error.clone());
                     self.is_loading = false;
+
+                    // Update global colony initialization state with error
+                    set_colony_initialization_error(error.clone());
+
                     Err(error)
                 }
             }
@@ -240,6 +268,10 @@ impl OnboardingState {
                 let error = format!("Failed to initialize colony: {}", e);
                 self.error_message = Some(error.clone());
                 self.is_loading = false;
+
+                // Update global colony initialization state with error
+                set_colony_initialization_error(error.clone());
+
                 Err(error)
             }
         }
@@ -425,14 +457,224 @@ impl OnboardingState {
     }
 }
 
+/// Global colony initialization state (separate from onboarding)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ColonyInitState {
+    pub is_initializing: bool,
+    pub progress: f32,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for ColonyInitState {
+    fn default() -> Self {
+        Self {
+            is_initializing: false,
+            progress: 0.0,
+            status: None,
+            error: None,
+        }
+    }
+}
+
 // Global onboarding state
 lazy_static::lazy_static! {
     static ref ONBOARDING_STATE: Arc<RwLock<OnboardingState>> = Arc::new(RwLock::new(OnboardingState::default()));
+    static ref COLONY_INIT_STATE: Arc<RwLock<ColonyInitState>> = Arc::new(RwLock::new(ColonyInitState::default()));
 }
 
 /// Get the global onboarding state
 pub fn onboarding_state() -> Arc<RwLock<OnboardingState>> {
     ONBOARDING_STATE.clone()
+}
+
+/// Get the global colony initialization state
+pub fn colony_init_state() -> Arc<RwLock<ColonyInitState>> {
+    COLONY_INIT_STATE.clone()
+}
+
+/// Check if colony initialization is currently active (anywhere, not just onboarding)
+pub fn is_colony_initializing() -> bool {
+    // First check the onboarding state
+    if let Ok(state) = COLONY_INIT_STATE.try_read() {
+        if state.is_initializing {
+            return true;
+        }
+    }
+
+    // Also check the existing colony progress events system
+    crate::app::colony_window::is_colony_operation_in_progress()
+}
+
+/// Start colony initialization tracking
+pub fn start_colony_initialization(status: Option<String>) {
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        state.is_initializing = true;
+        state.progress = 0.0;
+        state.status = status;
+        state.error = None;
+        log::info!("Colony initialization started globally");
+    }
+}
+
+/// Update colony initialization progress
+pub fn update_colony_initialization_progress(progress: f32, status: Option<String>) {
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        state.progress = progress;
+        if let Some(status) = status {
+            state.status = Some(status);
+        }
+        log::info!("Colony initialization progress updated: {:.1}%", progress * 100.0);
+    }
+}
+
+/// Complete colony initialization
+pub fn complete_colony_initialization() {
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        state.is_initializing = false;
+        state.progress = 1.0;
+        state.status = Some("Colony initialization completed!".to_string());
+        state.error = None;
+        log::info!("Colony initialization completed globally");
+    }
+}
+
+/// Set colony initialization error
+pub fn set_colony_initialization_error(error: String) {
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        state.is_initializing = false;
+        state.error = Some(error.clone());
+        log::error!("Colony initialization error: {}", error);
+    }
+}
+
+/// Reset colony initialization state (for testing)
+pub fn reset_colony_initialization_state() {
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        *state = ColonyInitState::default();
+        log::info!("Colony initialization state reset");
+    }
+}
+
+/// Handle colony progress events from the daemon
+pub fn handle_daemon_colony_progress(event: mutant_protocol::ColonyEvent, _operation_id: Option<String>) {
+    use mutant_protocol::ColonyEvent;
+
+    log::debug!("Handling daemon colony progress event: {:?}", event);
+
+    // Map colony events to progress and status
+    let (progress, status, is_initializing, is_error) = match &event {
+        // Initialization events
+        ColonyEvent::InitializationStarted => {
+            (0.0, Some("Colony initialization started...".to_string()), true, false)
+        },
+        ColonyEvent::DataStoreInitStarted => {
+            (0.1, Some("Initializing data store...".to_string()), true, false)
+        },
+        ColonyEvent::DataStoreInitCompleted => {
+            (0.2, Some("Data store initialized".to_string()), true, false)
+        },
+        ColonyEvent::KeyStoreInitStarted => {
+            (0.3, Some("Initializing key store...".to_string()), true, false)
+        },
+        ColonyEvent::KeyStoreInitCompleted => {
+            (0.4, Some("Key store initialized".to_string()), true, false)
+        },
+        ColonyEvent::KeyDerivationStarted => {
+            (0.5, Some("Deriving colony keys...".to_string()), true, false)
+        },
+        ColonyEvent::KeyDerivationCompleted { pod_address } => {
+            (0.6, Some(format!("Keys derived for pod: {}", pod_address)), true, false)
+        },
+        ColonyEvent::GraphInitStarted => {
+            (0.7, Some("Initializing graph database...".to_string()), true, false)
+        },
+        ColonyEvent::GraphInitCompleted => {
+            (0.8, Some("Graph database initialized".to_string()), true, false)
+        },
+        ColonyEvent::UserPodCheckStarted => {
+            (0.85, Some("Checking user pod...".to_string()), true, false)
+        },
+        ColonyEvent::UserPodCreationStarted => {
+            (0.9, Some("Creating user pod...".to_string()), true, false)
+        },
+        ColonyEvent::UserPodCreationCompleted { pod_address } => {
+            (0.95, Some(format!("User pod created: {}", pod_address)), true, false)
+        },
+        ColonyEvent::UserPodCheckCompleted => {
+            (0.98, Some("User pod check completed".to_string()), true, false)
+        },
+        ColonyEvent::InitializationCompleted => {
+            (1.0, Some("Colony initialization completed!".to_string()), false, false)
+        },
+
+        // Error events
+        ColonyEvent::OperationFailed { operation: _, error: _ } => {
+            (0.0, None, false, true)
+        },
+
+        // Progress events
+        ColonyEvent::Progress { operation, message, current, total } => {
+            let progress = if let (Some(current), Some(total)) = (current, total) {
+                if *total > 0 {
+                    (*current as f32) / (*total as f32)
+                } else {
+                    0.0
+                }
+            } else {
+                0.5 // Default progress for operations without specific progress
+            };
+            let status = format!("{}: {}", operation, message);
+            (progress, Some(status), true, false)
+        },
+
+        // Other events that indicate ongoing operations
+        ColonyEvent::PodRefreshStarted { .. } |
+        ColonyEvent::ContactSyncStarted { .. } |
+        ColonyEvent::IndexingStarted { .. } |
+        ColonyEvent::SearchStarted { .. } => {
+            // These are not part of initial colony initialization, so don't affect the modal
+            return;
+        },
+
+        // Completion events for non-initialization operations
+        ColonyEvent::PodRefreshCompleted { .. } |
+        ColonyEvent::ContactSyncCompleted { .. } |
+        ColonyEvent::IndexingCompleted { .. } |
+        ColonyEvent::SearchCompleted { .. } |
+        ColonyEvent::OperationCompleted { .. } => {
+            // These are not part of initial colony initialization, so don't affect the modal
+            return;
+        },
+
+        // Default case for any other events
+        _ => {
+            log::debug!("Unhandled colony event for progress tracking: {:?}", event);
+            return;
+        }
+    };
+
+    // Update the global colony initialization state
+    if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        if is_error {
+            if let ColonyEvent::OperationFailed { operation, error } = &event {
+                state.is_initializing = false;
+                state.error = Some(format!("{}: {}", operation, error));
+                log::error!("Colony initialization failed: {}: {}", operation, error);
+            }
+        } else {
+            state.is_initializing = is_initializing;
+            state.progress = progress;
+            if let Some(status) = status {
+                state.status = Some(status);
+            }
+            state.error = None;
+
+            log::info!("Colony initialization progress: {:.1}% - {}",
+                progress * 100.0,
+                state.status.as_deref().unwrap_or("Unknown status"));
+        }
+    }
 }
 
 /// Check if onboarding is currently active

@@ -136,6 +136,9 @@ impl Client {
                 request_rx: rx,
             };
 
+            // Note: Colony progress callback is set up in client_manager.rs
+            // to avoid duplicate callback setup since both systems use the same global callback
+
             info!("Connecting to daemon with retry logic");
             match this.connect(&DEFAULT_WS_URL()).await {
                 Ok(_) => {
@@ -1177,6 +1180,7 @@ struct MyApp {
     sidebar_expanded: bool,
     balance_fetch_counter: u32,
     onboarding_wizard: app::onboarding::wizard::OnboardingWizard,
+    colony_init_modal: app::onboarding::colony_modal::ColonyInitModal,
     onboarding_initialized: bool,
     frame_counter: u32,
 }
@@ -1193,6 +1197,7 @@ impl Default for MyApp {
             sidebar_expanded: true,
             balance_fetch_counter: 0,
             onboarding_wizard: app::onboarding::wizard::OnboardingWizard::default(),
+            colony_init_modal: app::onboarding::colony_modal::ColonyInitModal::default(),
             onboarding_initialized: false,
             frame_counter: 0,
         }
@@ -1547,6 +1552,13 @@ impl eframe::App for MyApp {
             }
             log::debug!("Frame {}: Onboarding wizard.show() completed, continuing to main interface", self.frame_counter);
         }
+
+        // Check if colony initialization is active and show the modal (even if onboarding is complete)
+        // Use the same colony progress system as the modal itself
+        log::debug!("Frame {}: About to call colony_init_modal.show(ctx)...", self.frame_counter);
+        let modal_result = self.colony_init_modal.show(ctx);
+        log::debug!("Frame {}: colony_init_modal.show(ctx) returned: {}", self.frame_counter, modal_result);
+        // Note: We don't return here - the colony modal should overlay the main interface
 
         log::debug!("Starting main UI rendering...");
 

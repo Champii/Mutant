@@ -432,6 +432,10 @@ impl OnboardingWizard {
         // Spawn the async task AFTER UI rendering is complete to avoid race conditions
         if spawn_initialization {
             log::info!("Starting colony initialization auto-start");
+
+            // Start global colony initialization tracking
+            super::start_colony_initialization(Some("Starting colony initialization...".to_string()));
+
             wasm_bindgen_futures::spawn_local(async move {
                 log::info!("Colony initialization async task started");
 
@@ -451,9 +455,11 @@ impl OnboardingWizard {
                 match initialization_result {
                     Ok(_) => {
                         log::info!("Colony initialization completed successfully");
+                        super::complete_colony_initialization();
                     }
                     Err(e) => {
                         log::error!("Colony initialization failed: {}", e);
+                        super::set_colony_initialization_error(e.clone());
                         // Reset the flag and set error message
                         if let Ok(mut state) = onboarding_state().try_write() {
                             state.colony_initialization_started = false;

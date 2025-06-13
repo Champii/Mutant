@@ -70,6 +70,10 @@ pub fn try_context() -> Option<Arc<Context>> {
 
 impl Context {
     async fn new() -> Self {
+        // Initialize client_manager early to ensure colony progress callback is set up
+        // before the main client connects and starts receiving events
+        client_manager::init_client_manager();
+
         let client = Client::spawn().await;
 
         // Clear any stale response handlers from previous sessions
