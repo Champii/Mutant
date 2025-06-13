@@ -267,9 +267,50 @@ impl OnboardingWizard {
             // Action buttons
             ui.horizontal(|ui| {
                 if ui.add(theme::primary_button("Continue")).clicked() && !state.is_loading {
+                    // Set loading state immediately to prevent multiple clicks
+                    state.is_loading = true;
+                    state.error_message = None;
+
                     wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok(mut state) = onboarding_state().write() {
-                            let _ = state.submit_credentials().await;
+                        // Use a retry mechanism to avoid deadlocks
+                        let mut attempts = 0;
+                        let max_attempts = 5;
+
+                        while attempts < max_attempts {
+                            if let Ok(mut state) = onboarding_state().try_write() {
+                                match state.submit_credentials().await {
+                                    Ok(_) => {
+                                        log::info!("Credential submission completed successfully");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        log::error!("Credential submission failed: {}", e);
+                                        state.is_loading = false;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                attempts += 1;
+                                log::debug!("Could not acquire write lock for credential submission, attempt {}/{}", attempts, max_attempts);
+
+                                // Small delay before retry
+                                let promise = js_sys::Promise::new(&mut |resolve, _| {
+                                    web_sys::window()
+                                        .unwrap()
+                                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 100)
+                                        .unwrap();
+                                });
+                                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                            }
+                        }
+
+                        if attempts >= max_attempts {
+                            log::error!("Failed to acquire write lock for credential submission after {} attempts", max_attempts);
+                            // Reset loading state if we couldn't submit
+                            if let Ok(mut state) = onboarding_state().try_write() {
+                                state.is_loading = false;
+                                state.error_message = Some("System busy, please try again".to_string());
+                            }
                         }
                     });
                 }
@@ -292,14 +333,46 @@ impl OnboardingWizard {
             // Spawn the async task without holding the lock
             wasm_bindgen_futures::spawn_local(async move {
                 log::info!("Colony initialization async task started");
-                if let Ok(mut state) = onboarding_state().write() {
-                    log::info!("Got write lock for colony initialization");
-                    match state.initialize_colony().await {
-                        Ok(_) => log::info!("Colony initialization completed successfully"),
-                        Err(e) => log::error!("Colony initialization failed: {}", e),
+
+                // Use retry mechanism to avoid deadlocks
+                let mut attempts = 0;
+                let max_attempts = 5;
+
+                while attempts < max_attempts {
+                    if let Ok(mut state) = onboarding_state().try_write() {
+                        log::info!("Got write lock for colony initialization");
+                        match state.initialize_colony().await {
+                            Ok(_) => {
+                                log::info!("Colony initialization completed successfully");
+                                break;
+                            }
+                            Err(e) => {
+                                log::error!("Colony initialization failed: {}", e);
+                                break;
+                            }
+                        }
+                    } else {
+                        attempts += 1;
+                        log::debug!("Could not acquire write lock for colony initialization, attempt {}/{}", attempts, max_attempts);
+
+                        // Small delay before retry
+                        let promise = js_sys::Promise::new(&mut |resolve, _| {
+                            web_sys::window()
+                                .unwrap()
+                                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 200)
+                                .unwrap();
+                        });
+                        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
                     }
-                } else {
-                    log::error!("Failed to get write lock for colony initialization");
+                }
+
+                if attempts >= max_attempts {
+                    log::error!("Failed to acquire write lock for colony initialization after {} attempts", max_attempts);
+                    // Reset the flag so user can try again
+                    if let Ok(mut state) = onboarding_state().try_write() {
+                        state.colony_initialization_started = false;
+                        state.error_message = Some("System busy, please refresh the page".to_string());
+                    }
                 }
             });
         }
@@ -363,10 +436,12 @@ impl OnboardingWizard {
                 if error.contains("connection") || error.contains("Connection") {
                     ui.add_space(10.0);
                     if ui.add(theme::secondary_button("Retry Connection")).clicked() {
-                        // Trigger connection check
+                        // Trigger connection check with non-blocking approach
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(mut state) = onboarding_state().write() {
+                            if let Ok(mut state) = onboarding_state().try_write() {
                                 let _ = state.check_connection_status().await;
+                            } else {
+                                log::debug!("Could not acquire write lock for connection retry");
                             }
                         });
                     }

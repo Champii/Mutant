@@ -250,13 +250,25 @@ impl MutantClient {
                         info!("CLIENT: Spawning WASM response handler");
                         spawn_local(async move {
                             info!("CLIENT: WASM response handler started");
-                            while let Some(response) = client_clone.next_response().await {
-                                match response {
-                                    Ok(_resp) => {
-                                        // Response processed by process_response
-                                    },
-                                    Err(e) => {
-                                        error!("CLIENT: Error processing response: {:?}", e);
+                            loop {
+                                // Try to get the next response with error handling
+                                match client_clone.next_response().await {
+                                    Some(response) => {
+                                        match response {
+                                            Ok(_resp) => {
+                                                // Response processed by process_response
+                                                info!("CLIENT: Successfully processed response");
+                                            },
+                                            Err(e) => {
+                                                error!("CLIENT: Error processing response: {:?}", e);
+                                                // Continue the loop instead of breaking to maintain connection
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        warn!("CLIENT: Response handler received None, connection may be closed");
+                                        break;
                                     }
                                 }
                             }

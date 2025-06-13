@@ -609,16 +609,20 @@ impl MutantClient {
                 }
             },
             Response::SetCredentials(set_credentials_response) => {
-                let pending_sender = pending_requests
-                    .lock()
-                    .unwrap()
-                    .remove(&PendingRequestKey::SetCredentials);
-                if let Some(PendingSender::SetCredentials(sender)) = pending_sender {
-                    if sender.send(Ok(set_credentials_response)).is_err() {
-                        warn!("Failed to send SetCredentials response (receiver dropped)");
+                match pending_requests.lock() {
+                    Ok(mut pending) => {
+                        let pending_sender = pending.remove(&PendingRequestKey::SetCredentials);
+                        if let Some(PendingSender::SetCredentials(sender)) = pending_sender {
+                            if sender.send(Ok(set_credentials_response)).is_err() {
+                                warn!("Failed to send SetCredentials response (receiver dropped)");
+                            }
+                        } else {
+                            warn!("Received SetCredentials response but no SetCredentials request was pending");
+                        }
                     }
-                } else {
-                    warn!("Received SetCredentials response but no SetCredentials request was pending");
+                    Err(e) => {
+                        error!("Failed to lock pending_requests mutex for SetCredentials: {}", e);
+                    }
                 }
             },
             Response::InitializeColony(initialize_colony_response) => {
@@ -668,20 +672,24 @@ impl MutantClient {
             // Use a loop to handle non-text messages without recursion
             loop {
                 // Use the async next() method from nash-ws to wait for the next message
+                info!("CLIENT: Waiting for next WebSocket message...");
                 match receiver.next().await {
                     Some(Ok(message)) => {
                         // Process the message
+                        info!("CLIENT: Processing WebSocket message type: {:?}", std::mem::discriminant(&message));
                         match message {
                             nash_ws::Message::Text(text) => {
+                                info!("CLIENT: Received text message: {}", text);
                                 match serde_json::from_str::<Response>(&text) {
                                     Ok(response) => {
+                                        info!("CLIENT: Successfully deserialized response: {:?}", response);
                                         Self::process_response(
                                             response.clone(),
                                             &self.tasks,
                                             &self.task_channels,
                                             &self.pending_requests,
                                         );
-
+                                        info!("CLIENT: Response processed successfully");
                                         return Some(Ok(response));
                                     }
                                     Err(e) => {

@@ -27,6 +27,8 @@ pub struct OnboardingState {
     pub last_connection_check: Option<web_time::SystemTime>,
     pub reconnection_attempts: u32,
     pub max_reconnection_attempts: u32,
+    // Flag to pause monitoring during critical operations
+    pub pause_monitoring: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -64,6 +66,7 @@ impl Default for OnboardingState {
             last_connection_check: None,
             reconnection_attempts: 0,
             max_reconnection_attempts: 3,
+            pause_monitoring: false,
         }
     }
 }
@@ -119,13 +122,9 @@ impl OnboardingState {
     pub async fn submit_credentials(&mut self) -> Result<(), String> {
         self.is_loading = true;
         self.error_message = None;
+        self.pause_monitoring = true; // Pause monitoring during credential submission
 
-        // Check connection before submitting credentials
-        if let Err(e) = self.monitor_connection_during_operation("credential_submission").await {
-            self.error_message = Some(format!("Connection check failed: {}", e));
-            self.is_loading = false;
-            return Err(e);
-        }
+        log::info!("Starting credential submission");
 
         // Generate credentials if auto-generate is enabled
         let private_key = if self.auto_generate_private_key {
@@ -148,20 +147,17 @@ impl OnboardingState {
         match ctx.set_credentials(private_key, colony_mnemonic).await {
             Ok(response) => {
                 if response.success {
-                    // Verify connection is still active after credential submission
-                    if let Err(e) = self.check_connection_status().await {
-                        log::warn!("Connection check after credential submission failed: {}", e);
-                        // Continue anyway, but note the issue
-                    }
-
+                    log::info!("Credentials set successfully, proceeding to colony initialization");
                     self.current_step = OnboardingStep::ColonyInitialization;
                     self.colony_initialization_started = false; // Reset flag for new step
                     self.is_loading = false;
+                    self.pause_monitoring = false; // Resume monitoring
                     Ok(())
                 } else {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
                     self.error_message = Some(error.clone());
                     self.is_loading = false;
+                    self.pause_monitoring = false; // Resume monitoring
                     Err(error)
                 }
             }
@@ -169,6 +165,7 @@ impl OnboardingState {
                 let error = format!("Failed to set credentials: {}", e);
                 self.error_message = Some(error.clone());
                 self.is_loading = false;
+                self.pause_monitoring = false; // Resume monitoring
                 Err(error)
             }
         }
@@ -414,22 +411,8 @@ impl OnboardingState {
                     if let Err(reconnect_err) = crate::app::client_manager::reconnect().await {
                         log::error!("Reconnection attempt failed: {}", reconnect_err);
                     } else {
-                        // Wait a moment and check again
-                        wasm_bindgen_futures::spawn_local(async move {
-                            // Small delay before rechecking
-                            let promise = js_sys::Promise::new(&mut |resolve, _| {
-                                web_sys::window()
-                                    .unwrap()
-                                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 1000)
-                                    .unwrap();
-                            });
-                            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-
-                            // Recheck connection status
-                            if let Ok(mut state) = onboarding_state().write() {
-                                let _ = state.check_connection_status().await;
-                            }
-                        });
+                        log::info!("Reconnection attempt initiated, will be verified in next monitoring cycle");
+                        // Don't recursively call check_connection_status - let the monitoring loop handle it
                     }
                 }
             }
@@ -509,10 +492,12 @@ pub async fn init_onboarding() {
             Ok(_) => {
                 log::info!("Onboarding status check completed successfully");
 
-                // Start periodic connection monitoring if onboarding is needed
-                if state.needs_onboarding {
-                    start_connection_monitoring();
-                }
+                // Temporarily disable connection monitoring to avoid conflicts
+                // TODO: Re-enable once the deadlock issues are fully resolved
+                // if state.needs_onboarding {
+                //     start_connection_monitoring();
+                // }
+                log::info!("Connection monitoring disabled to prevent deadlocks during onboarding");
             },
             Err(e) => log::error!("Onboarding status check failed: {}", e),
         }
@@ -527,12 +512,13 @@ fn start_connection_monitoring() {
 
     wasm_bindgen_futures::spawn_local(async move {
         loop {
-            // Check if onboarding is still active
-            let should_continue = {
+            // Check if onboarding is still active and monitoring is not paused
+            let (should_continue, is_paused) = {
                 if let Ok(state) = ONBOARDING_STATE.read() {
-                    state.needs_onboarding && state.current_step != OnboardingStep::Completed
+                    let should_continue = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
+                    (should_continue, state.pause_monitoring)
                 } else {
-                    false
+                    (false, false)
                 }
             };
 
@@ -541,20 +527,42 @@ fn start_connection_monitoring() {
                 break;
             }
 
-            // Perform connection check
-            if let Ok(mut state) = ONBOARDING_STATE.write() {
-                // Only check if not already checking and enough time has passed
-                let should_check = if let Some(last_check) = state.last_connection_check {
-                    match last_check.elapsed() {
-                        Ok(elapsed) => elapsed.as_secs() >= 10, // Check every 10 seconds
-                        Err(_) => true,
-                    }
-                } else {
-                    true
-                };
+            if is_paused {
+                log::debug!("Connection monitoring paused, skipping this cycle");
+                // Wait and continue to next iteration
+                let promise = js_sys::Promise::new(&mut |resolve, _| {
+                    web_sys::window()
+                        .unwrap()
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 1000)
+                        .unwrap();
+                });
+                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                continue;
+            }
 
-                if should_check && !state.connection_check_in_progress {
+            // Perform connection check with non-blocking approach
+            let should_check = {
+                if let Ok(state) = ONBOARDING_STATE.read() {
+                    let time_check = if let Some(last_check) = state.last_connection_check {
+                        match last_check.elapsed() {
+                            Ok(elapsed) => elapsed.as_secs() >= 10, // Check every 10 seconds
+                            Err(_) => true,
+                        }
+                    } else {
+                        true
+                    };
+                    time_check && !state.connection_check_in_progress
+                } else {
+                    false
+                }
+            };
+
+            if should_check {
+                // Try to get write lock with timeout to avoid deadlocks
+                if let Ok(mut state) = ONBOARDING_STATE.try_write() {
                     let _ = state.check_connection_status().await;
+                } else {
+                    log::debug!("Connection monitoring: Could not acquire write lock, skipping this check");
                 }
             }
 
