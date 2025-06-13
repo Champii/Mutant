@@ -440,25 +440,28 @@ pub fn is_onboarding_active() -> bool {
     log::debug!("is_onboarding_active() called");
     log::debug!("Attempting to read ONBOARDING_STATE...");
 
-    if let Ok(state) = ONBOARDING_STATE.read() {
+    // Use try_read to avoid blocking the UI thread - this is critical!
+    if let Ok(state) = ONBOARDING_STATE.try_read() {
         log::debug!("Successfully got ONBOARDING_STATE read lock");
         let is_active = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
         log::info!("is_onboarding_active: needs_onboarding={}, current_step={:?}, is_active={}",
             state.needs_onboarding, state.current_step, is_active);
         is_active
     } else {
-        log::error!("Failed to get onboarding state lock in is_onboarding_active");
+        log::debug!("Could not get onboarding state lock in is_onboarding_active (busy), assuming not active");
+        // If we can't get the lock, assume onboarding is not active to avoid blocking the UI
+        // This is safer than blocking the entire UI thread
         false
     }
 }
 
 /// Reset onboarding state for clean initialization
 pub fn reset_onboarding_state() {
-    if let Ok(mut state) = ONBOARDING_STATE.write() {
+    if let Ok(mut state) = ONBOARDING_STATE.try_write() {
         *state = OnboardingState::default();
         log::info!("Onboarding state reset for clean initialization");
     } else {
-        log::error!("Failed to get onboarding state lock for reset");
+        log::error!("Failed to get onboarding state lock for reset (busy)");
     }
 }
 
@@ -469,7 +472,7 @@ pub async fn init_onboarding() {
     // First reset the onboarding state for clean initialization
     reset_onboarding_state();
 
-    if let Ok(mut state) = ONBOARDING_STATE.write() {
+    if let Ok(mut state) = ONBOARDING_STATE.try_write() {
         log::info!("Got onboarding state lock, calling check_onboarding_status");
         match state.check_onboarding_status().await {
             Ok(_) => {
@@ -485,7 +488,7 @@ pub async fn init_onboarding() {
             Err(e) => log::error!("Onboarding status check failed: {}", e),
         }
     } else {
-        log::error!("Failed to get onboarding state lock");
+        log::error!("Failed to get onboarding state lock (busy)");
     }
 }
 

@@ -1952,10 +1952,11 @@ pub fn add_colony_progress_event(
 
     let progress_event = ColonyProgressEvent {
         event: event.clone(),
-        operation_id,
+        operation_id: operation_id.clone(),
     };
 
     // Use try_lock to avoid blocking and potential deadlocks
+    // Don't use catch_unwind as it's not properly supported in WebAssembly
     match COLONY_PROGRESS_EVENTS.try_lock() {
         Ok(mut events) => {
             events.push(progress_event);
@@ -1981,7 +1982,7 @@ pub fn add_colony_progress_event(
                 mut events => {
                     events.push(ColonyProgressEvent {
                         event,
-                        operation_id: None, // operation_id was moved above
+                        operation_id,
                     });
                     log::debug!("Recovered from poisoned mutex and added event");
                 }

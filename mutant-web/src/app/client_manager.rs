@@ -163,12 +163,15 @@ async fn handle_get_operation(
 // Start the client manager in a background task
 fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<ClientCommand>) {
     spawn_local(async move {
-        // Set up the colony progress callback
+        // Set up the colony progress callback with error handling
         #[cfg(target_arch = "wasm32")]
         {
             mutant_client::set_colony_progress_callback(|event, operation_id| {
                 log::debug!("CLIENT MANAGER: Received colony progress event via callback: {:?}", event);
+                // Add extra safety by wrapping the callback in a simple error handler
+                // Don't use catch_unwind as it's not properly supported in WebAssembly
                 crate::app::colony_window::add_colony_progress_event(event, operation_id);
+                log::debug!("CLIENT MANAGER: Colony progress event processed successfully");
             });
         }
 

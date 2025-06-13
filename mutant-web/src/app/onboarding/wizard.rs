@@ -23,10 +23,11 @@ impl OnboardingWizard {
         log::debug!("OnboardingWizard::show() called");
 
         log::debug!("Getting onboarding state...");
-        let state = onboarding_state();
+        let state_lock = onboarding_state();
         log::debug!("Got onboarding state, attempting to read...");
 
-        let should_show = if let Ok(state) = state.read() {
+        // Use try_read to avoid blocking and check if we should show
+        let should_show = if let Ok(state) = state_lock.try_read() {
             let should_show = state.needs_onboarding && state.current_step != OnboardingStep::Completed;
             log::debug!("Onboarding wizard: needs_onboarding={}, current_step={:?}, should_show={}",
                 state.needs_onboarding, state.current_step, should_show);
@@ -54,8 +55,8 @@ impl OnboardingWizard {
                 .corner_radius(12.0)
                 .inner_margin(20.0))
             .show(ctx, |ui| {
-                // Draw content based on current step
-                if let Ok(mut state) = state.write() {
+                // Draw content based on current step - use try_write to avoid deadlocks
+                if let Ok(mut state) = state_lock.try_write() {
                     self.draw_content(ui, &mut state);
                 } else {
                     ui.label("Loading onboarding...");
@@ -347,58 +348,14 @@ impl OnboardingWizard {
         // Check if we need to start initialization before drawing UI
         let should_start_initialization = !state.is_loading && !state.colony_initialization_started && state.colony_initialization_progress == 0.0;
 
+        // Store the flag to defer the async task spawning until after UI rendering
+        let mut spawn_initialization = false;
+
         if should_start_initialization {
-            // Don't modify state here - do it in the async task to avoid deadlock
-            log::info!("Starting colony initialization auto-start");
-
-            // Spawn the async task without holding the lock
-            wasm_bindgen_futures::spawn_local(async move {
-                log::info!("Colony initialization async task started");
-
-                // Use retry mechanism to avoid deadlocks
-                let mut attempts = 0;
-                let max_attempts = 5;
-
-                while attempts < max_attempts {
-                    if let Ok(mut state) = onboarding_state().try_write() {
-                        log::info!("Got write lock for colony initialization");
-                        // Set flag here to prevent multiple spawns
-                        state.colony_initialization_started = true;
-
-                        match state.initialize_colony().await {
-                            Ok(_) => {
-                                log::info!("Colony initialization completed successfully");
-                                break;
-                            }
-                            Err(e) => {
-                                log::error!("Colony initialization failed: {}", e);
-                                break;
-                            }
-                        }
-                    } else {
-                        attempts += 1;
-                        log::debug!("Could not acquire write lock for colony initialization, attempt {}/{}", attempts, max_attempts);
-
-                        // Small delay before retry
-                        let promise = js_sys::Promise::new(&mut |resolve, _| {
-                            web_sys::window()
-                                .unwrap()
-                                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 200)
-                                .unwrap();
-                        });
-                        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-                    }
-                }
-
-                if attempts >= max_attempts {
-                    log::error!("Failed to acquire write lock for colony initialization after {} attempts", max_attempts);
-                    // Reset the flag so user can try again
-                    if let Ok(mut state) = onboarding_state().try_write() {
-                        state.colony_initialization_started = false;
-                        state.error_message = Some("System busy, please refresh the page".to_string());
-                    }
-                }
-            });
+            // Set flag immediately to prevent multiple spawns
+            state.colony_initialization_started = true;
+            spawn_initialization = true;
+            log::info!("Marking colony initialization to start after UI rendering");
         }
 
         ui.vertical_centered(|ui| {
@@ -460,18 +417,53 @@ impl OnboardingWizard {
                 if error.contains("connection") || error.contains("Connection") {
                     ui.add_space(10.0);
                     if ui.add(theme::secondary_button("Retry Connection")).clicked() {
-                        // Trigger connection check with non-blocking approach
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(mut state) = onboarding_state().try_write() {
-                                let _ = state.check_connection_status().await;
-                            } else {
-                                log::debug!("Could not acquire write lock for connection retry");
-                            }
-                        });
+                        // Reset the initialization flag to allow retry
+                        if let Ok(mut state) = onboarding_state().try_write() {
+                            state.colony_initialization_started = false;
+                            state.error_message = None;
+                            state.is_loading = false;
+                            log::info!("Reset colony initialization for retry");
+                        }
                     }
                 }
             }
         });
+
+        // Spawn the async task AFTER UI rendering is complete to avoid race conditions
+        if spawn_initialization {
+            log::info!("Starting colony initialization auto-start");
+            wasm_bindgen_futures::spawn_local(async move {
+                log::info!("Colony initialization async task started");
+
+                // Try to get the lock once with a timeout
+                let initialization_result = match onboarding_state().try_write() {
+                    Ok(mut state) => {
+                        log::info!("Got write lock for colony initialization");
+                        state.initialize_colony().await
+                    }
+                    Err(_) => {
+                        log::error!("Could not acquire write lock for colony initialization");
+                        Err("System busy, please try again".to_string())
+                    }
+                };
+
+                // Handle the result
+                match initialization_result {
+                    Ok(_) => {
+                        log::info!("Colony initialization completed successfully");
+                    }
+                    Err(e) => {
+                        log::error!("Colony initialization failed: {}", e);
+                        // Reset the flag and set error message
+                        if let Ok(mut state) = onboarding_state().try_write() {
+                            state.colony_initialization_started = false;
+                            state.error_message = Some(e);
+                            state.is_loading = false;
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /// Draw connection status indicator
@@ -528,12 +520,11 @@ impl OnboardingWizard {
             ui.add_space(30.0);
 
             if ui.add(theme::success_button("Get Started")).clicked() {
-                // Mark onboarding as completed using async task to avoid deadlock
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(mut state) = onboarding_state().try_write() {
-                        state.needs_onboarding = false;
-                    }
-                });
+                // Mark onboarding as completed directly - no need for async task here
+                if let Ok(mut state) = onboarding_state().try_write() {
+                    state.needs_onboarding = false;
+                    log::info!("Onboarding marked as completed by user");
+                }
             }
         });
     }
