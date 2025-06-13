@@ -91,6 +91,9 @@ pub enum ClientRequest {
     RestartDaemon {
         response_name: String,
     },
+    ReloadCredentials {
+        response_name: String,
+    },
 }
 
 #[derive(Debug)]
@@ -110,6 +113,7 @@ pub enum ClientResponse {
     SetCredentials(Result<mutant_protocol::SetCredentialsResponse, String>),
     InitializeColony(Result<mutant_protocol::InitializeColonyResponse, String>),
     RestartDaemon(Result<mutant_protocol::RestartDaemonResponse, String>),
+    ReloadCredentials(Result<mutant_protocol::ReloadCredentialsResponse, String>),
 }
 
 pub struct Client {
@@ -306,6 +310,12 @@ impl Client {
                         let result = this.client.restart_daemon().await.map_err(|e| format!("{:?}", e));
                         if let Some(tx) = responses.write().unwrap().remove(&response_name) {
                             let _ = tx.send(ClientResponse::RestartDaemon(result));
+                        }
+                    }
+                    ClientRequest::ReloadCredentials { response_name } => {
+                        let result = this.client.reload_credentials().await.map_err(|e| format!("{:?}", e));
+                        if let Some(tx) = responses.write().unwrap().remove(&response_name) {
+                            let _ = tx.send(ClientResponse::ReloadCredentials(result));
                         }
                     }
                 }
@@ -1020,6 +1030,33 @@ impl ClientSender {
             match response {
                 ClientResponse::RestartDaemon(Ok(result)) => Ok(result),
                 ClientResponse::RestartDaemon(Err(e)) => Err(e),
+                _ => Err("Unexpected response".to_string()),
+            }
+        })
+    }
+
+    pub async fn reload_credentials(&self) -> Result<mutant_protocol::ReloadCredentialsResponse, String> {
+        let response_name = "reload_credentials".to_string();
+
+        if self.responses.read().unwrap().contains_key(&response_name) {
+            error!("ReloadCredentials request already pending");
+            return Err("ReloadCredentials request already pending".to_string());
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.responses.write().unwrap().insert(response_name.clone(), tx);
+
+        let request = ClientRequest::ReloadCredentials {
+            response_name: response_name.clone(),
+        };
+
+        self.tx.unbounded_send(request)
+            .map_err(|e| format!("Failed to send reload credentials request: {}", e))?;
+
+        rx.await.map_err(|e| format!("{:?}", e)).and_then(|response| {
+            match response {
+                ClientResponse::ReloadCredentials(Ok(result)) => Ok(result),
+                ClientResponse::ReloadCredentials(Err(e)) => Err(e),
                 _ => Err("Unexpected response".to_string()),
             }
         })

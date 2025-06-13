@@ -16,6 +16,12 @@ use tokio::signal;
 // Thread-safe singleton to track public-only mode
 pub static PUBLIC_ONLY_MODE: OnceCell<bool> = OnceCell::const_new();
 
+// Global replaceable MutAnt instance for credential reloading
+static GLOBAL_MUTANT: OnceCell<Arc<RwLock<Arc<MutAnt>>>> = OnceCell::const_new();
+
+// Store initialization parameters for reloading
+static INIT_PARAMS: OnceCell<Arc<RwLock<(NetworkChoice, bool)>>> = OnceCell::const_new();
+
 /// Helper function to initialize MutAnt based on network choice and private key
 /// Returns (MutAnt instance, is_public_only, actual_private_key_used)
 async fn init_mutant(network_choice: NetworkChoice, private_key: Option<String>, random_testnet_key: bool) -> Result<(MutAnt, bool, Option<String>), Error> {
@@ -165,6 +171,119 @@ pub struct AppOptions {
     pub random_testnet_key: bool,
 }
 
+/// Initialize the global MutAnt instance
+pub fn init_global_mutant(mutant: Arc<MutAnt>, network_choice: NetworkChoice, random_testnet_key: bool) -> Result<(), Error> {
+    let global_mutant = Arc::new(RwLock::new(mutant));
+    GLOBAL_MUTANT.set(global_mutant).map_err(|_| Error::Internal("Global MutAnt already initialized".to_string()))?;
+
+    let init_params = Arc::new(RwLock::new((network_choice, random_testnet_key)));
+    INIT_PARAMS.set(init_params).map_err(|_| Error::Internal("Init params already set".to_string()))?;
+
+    Ok(())
+}
+
+/// Get the current global MutAnt instance
+pub fn get_global_mutant() -> Option<Arc<MutAnt>> {
+    GLOBAL_MUTANT.get().and_then(|global| {
+        global.try_read().ok().map(|guard| guard.clone())
+    })
+}
+
+/// Reload the MutAnt instance with new credentials
+pub async fn reload_mutant_instance() -> Result<(), Error> {
+    log::info!("Starting MutAnt instance reload...");
+
+    // Load .env file to get updated credentials
+    if let Err(e) = dotenvy::dotenv() {
+        log::debug!("No .env file found or failed to load during reload: {}", e);
+    } else {
+        log::info!("Reloaded environment variables from .env file");
+    }
+
+    // Get initialization parameters
+    let (network_choice, random_testnet_key) = {
+        let init_params = INIT_PARAMS.get()
+            .ok_or_else(|| Error::Internal("Init params not set".to_string()))?;
+        let params = init_params.read().await;
+        *params
+    };
+
+    // Get private key from environment or config
+    let config = Config::load()?;
+    let private_key = match config.get_private_key(network_choice)? {
+        Some((key_from_file, pk_hex)) => {
+            log::info!("Loaded private key from file for reload: {}", pk_hex);
+            Some(key_from_file)
+        }
+        None => {
+            match std::env::var("PRIVATE_KEY") {
+                Ok(env_key) if !env_key.is_empty() => {
+                    log::info!("Found PRIVATE_KEY environment variable for reload");
+                    Some(env_key)
+                }
+                _ => {
+                    log::info!("No private key found during reload, using public-only mode");
+                    None
+                }
+            }
+        }
+    };
+
+    // Initialize new MutAnt instance
+    let (new_mutant, is_public_only, actual_private_key) = init_mutant(network_choice, private_key, random_testnet_key).await?;
+    let new_mutant = Arc::new(new_mutant);
+
+    // Update the global instance
+    let global_mutant = GLOBAL_MUTANT.get()
+        .ok_or_else(|| Error::Internal("Global MutAnt not initialized".to_string()))?;
+
+    {
+        let mut guard = global_mutant.write().await;
+        *guard = new_mutant.clone();
+    }
+
+    // Update public-only mode flag
+    // Note: We can't change OnceCell after it's set, but we can log the change
+    let current_public_only = PUBLIC_ONLY_MODE.get().copied().unwrap_or(false);
+    if current_public_only != is_public_only {
+        log::info!("Public-only mode changed from {} to {} (will take effect on next restart)",
+                   current_public_only, is_public_only);
+    }
+
+    // Reinitialize colony manager if we have credentials
+    if !is_public_only {
+        log::info!("Reinitializing colony manager with new credentials...");
+        crate::handlers::colony::set_colony_init_params(network_choice, actual_private_key.clone()).await;
+
+        match new_mutant.get_wallet().await {
+            Ok(wallet) => {
+                let wallet_clone = wallet.clone();
+                let network_choice_clone = network_choice;
+                let private_key_clone = actual_private_key.clone();
+
+                tokio::spawn(async move {
+                    match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
+                        Ok(_) => {
+                            log::info!("Colony manager reinitialized successfully");
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to reinitialize colony manager: {}", e);
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                log::warn!("Failed to get wallet for colony reinitialization: {}", e);
+            }
+        }
+    }
+
+    log::info!("MutAnt instance reloaded successfully{}",
+               if is_public_only { " in public-only mode" } else { "" });
+
+    Ok(())
+}
+
 pub async fn run(options: AppOptions) -> Result<(), Error> {
     // check if the daemon is running by checking the lock file
     if std::fs::File::open(&options.lock_file_path).is_ok() {
@@ -254,6 +373,9 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
     // Initialize MutAnt with the appropriate mode
     let (mutant, is_public_only, actual_private_key) = init_mutant(network_choice, private_key.clone(), options.random_testnet_key).await?;
     let mutant = Arc::new(mutant);
+
+    // Initialize the global MutAnt instance for reloading
+    init_global_mutant(mutant.clone(), network_choice, options.random_testnet_key)?;
 
     // Set the public-only mode flag
     PUBLIC_ONLY_MODE.set(is_public_only).expect("PUBLIC_ONLY_MODE should only be set once");

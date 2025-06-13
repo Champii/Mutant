@@ -410,6 +410,11 @@ impl Context {
         self.client.restart_daemon().await.map_err(|e| e.to_string())
     }
 
+    /// Reload credentials without restarting the daemon
+    pub async fn reload_credentials(&self) -> Result<mutant_protocol::ReloadCredentialsResponse, String> {
+        self.client.reload_credentials().await.map_err(|e| e.to_string())
+    }
+
     // Create a new progress object for tracking a put operation
     pub fn create_progress(&self, key: &str, filename: &str) -> (String, Arc<RwLock<Progress>>) {
         // Generate a unique ID for this put operation

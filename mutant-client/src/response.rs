@@ -647,6 +647,19 @@ impl MutantClient {
                     warn!("Received RestartDaemon response but no RestartDaemon request was pending");
                 }
             },
+            Response::ReloadCredentials(reload_credentials_response) => {
+                let pending_sender = pending_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&PendingRequestKey::ReloadCredentials);
+                if let Some(PendingSender::ReloadCredentials(sender)) = pending_sender {
+                    if sender.send(Ok(reload_credentials_response)).is_err() {
+                        warn!("Failed to send ReloadCredentials response (receiver dropped)");
+                    }
+                } else {
+                    warn!("Received ReloadCredentials response but no ReloadCredentials request was pending");
+                }
+            },
         }
     }
 

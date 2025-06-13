@@ -84,11 +84,14 @@ pub async fn handle_ws(ws: WebSocket, mutant: Arc<MutAnt>, tasks: TaskMap, activ
             let original_request = text.to_string(); // Keep for error reporting
             match serde_json::from_str::<Request>(text) {
                 Ok(request) => {
+                    // Get the current MutAnt instance from global state (for credential reloading)
+                    let current_mutant = crate::app::get_global_mutant().unwrap_or_else(|| mutant.clone());
+
                     if let Err(e) = handle_request(
                         request,
                         original_request.as_str(),
                         update_tx.clone(), // Pass the update channel sender
-                        mutant.clone(),
+                        current_mutant,
                         tasks.clone(),
                         active_keys.clone(),
                     )

@@ -11,6 +11,7 @@ use mutant_protocol::{
     SetCredentialsRequest, SetCredentialsResponse,
     InitializeColonyRequest, InitializeColonyResponse,
     RestartDaemonRequest, RestartDaemonResponse,
+    ReloadCredentialsRequest, ReloadCredentialsResponse,
     Response, ColonyEvent, ColonyProgressResponse,
 };
 
@@ -273,4 +274,34 @@ pub(crate) async fn handle_restart_daemon(
     // Exit the daemon process - the system should restart it
     log::info!("Daemon restart requested - exiting process");
     std::process::exit(0);
+}
+
+/// Handle reload credentials request - reload MutAnt instance without restarting daemon
+pub(crate) async fn handle_reload_credentials(
+    _req: ReloadCredentialsRequest,
+    update_tx: UpdateSender,
+) -> Result<(), DaemonError> {
+    log::info!("Handling ReloadCredentials request");
+
+    // Try to reload the MutAnt instance with new credentials
+    match crate::app::reload_mutant_instance().await {
+        Ok(_) => {
+            log::info!("MutAnt instance reloaded successfully");
+            let response = ReloadCredentialsResponse {
+                success: true,
+                error: None,
+            };
+            let _ = update_tx.send(Response::ReloadCredentials(response));
+        }
+        Err(e) => {
+            log::error!("Failed to reload MutAnt instance: {}", e);
+            let response = ReloadCredentialsResponse {
+                success: false,
+                error: Some(format!("Failed to reload credentials: {}", e)),
+            };
+            let _ = update_tx.send(Response::ReloadCredentials(response));
+        }
+    }
+
+    Ok(())
 }

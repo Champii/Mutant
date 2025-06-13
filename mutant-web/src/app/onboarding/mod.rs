@@ -154,25 +154,25 @@ impl OnboardingState {
             Ok(response) => {
                 if response.success {
                     self.colony_initialization_progress = 1.0;
-                    self.colony_initialization_status = Some("Colony initialization completed! Restarting daemon...".to_string());
-                    log::info!("Colony initialization completed successfully, now restarting daemon");
+                    self.colony_initialization_status = Some("Colony initialization completed! Reloading credentials...".to_string());
+                    log::info!("Colony initialization completed successfully, now reloading credentials");
 
-                    // Restart the daemon to reload credentials
-                    match self.restart_daemon().await {
+                    // Reload credentials without restarting the daemon
+                    match self.reload_credentials().await {
                         Ok(_) => {
                             self.current_step = OnboardingStep::Completed;
                             self.needs_onboarding = false; // Mark onboarding as fully completed
-                            self.colony_initialization_status = Some("Daemon restarted successfully!".to_string());
+                            self.colony_initialization_status = Some("Credentials reloaded successfully!".to_string());
                             self.is_loading = false;
-                            log::info!("Onboarding completed successfully - daemon restarted and needs_onboarding set to false");
+                            log::info!("Onboarding completed successfully - credentials reloaded and needs_onboarding set to false");
                             Ok(())
                         }
                         Err(e) => {
-                            log::warn!("Daemon restart failed, but onboarding is complete: {}", e);
-                            // Even if restart fails, mark onboarding as complete since credentials are saved
+                            log::warn!("Credential reload failed, but onboarding is complete: {}", e);
+                            // Even if reload fails, mark onboarding as complete since credentials are saved
                             self.current_step = OnboardingStep::Completed;
                             self.needs_onboarding = false;
-                            self.colony_initialization_status = Some("Completed (daemon restart failed)".to_string());
+                            self.colony_initialization_status = Some("Completed (credential reload failed)".to_string());
                             self.is_loading = false;
                             Ok(())
                         }
@@ -233,17 +233,17 @@ impl OnboardingState {
         }
     }
 
-    /// Restart the daemon to reload credentials
-    pub async fn restart_daemon(&mut self) -> Result<(), String> {
-        log::info!("Restarting daemon to reload credentials");
+    /// Reload credentials without restarting the daemon
+    pub async fn reload_credentials(&mut self) -> Result<(), String> {
+        log::info!("Reloading credentials without restarting daemon");
         self.is_loading = true;
         self.error_message = None;
 
         let ctx = context();
-        match ctx.restart_daemon().await {
+        match ctx.reload_credentials().await {
             Ok(response) => {
                 if response.success {
-                    log::info!("Daemon restart initiated successfully");
+                    log::info!("Credential reload initiated successfully");
                     Ok(())
                 } else {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
@@ -253,7 +253,7 @@ impl OnboardingState {
                 }
             }
             Err(e) => {
-                let error = format!("Failed to restart daemon: {}", e);
+                let error = format!("Failed to reload credentials: {}", e);
                 self.error_message = Some(error.clone());
                 self.is_loading = false;
                 Err(error)
