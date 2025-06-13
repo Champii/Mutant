@@ -204,23 +204,33 @@ impl OnboardingState {
         format!("{:064x}", combined % (1u128 << 64))
     }
 
-    /// Generate a random colony mnemonic (placeholder)
+    /// Generate a random colony mnemonic using proper BIP39 standard
     fn generate_colony_mnemonic(&self) -> String {
-        // This is a placeholder - in a real implementation, this should generate a proper BIP39 mnemonic
-        let words = [
-            "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
-            "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
-        ];
-        // Use timestamp and random values for word selection in WASM
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        (0..12)
-            .map(|i| {
-                let random_offset = (js_sys::Math::random() * words.len() as f64) as usize;
-                let index = (timestamp as usize + i + random_offset) % words.len();
-                words[index]
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        use bip39::{Mnemonic, Language};
+
+        // Generate entropy using WASM-compatible random source
+        let mut entropy = [0u8; 16]; // 128 bits for 12-word mnemonic
+
+        // Use timestamp and browser's Math.random() for entropy in WASM
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let timestamp_bytes = timestamp.to_le_bytes();
+
+        // Fill entropy with combination of timestamp and random values
+        for i in 0..16 {
+            let random_value = (js_sys::Math::random() * 256.0) as u8;
+            let timestamp_byte = timestamp_bytes[i % timestamp_bytes.len()];
+            entropy[i] = random_value.wrapping_add(timestamp_byte);
+        }
+
+        // Generate BIP39 mnemonic from entropy
+        match Mnemonic::from_entropy(&entropy, Language::English) {
+            Ok(mnemonic) => mnemonic.to_string(),
+            Err(e) => {
+                log::error!("Failed to generate BIP39 mnemonic: {}", e);
+                // Fallback to a simple but valid mnemonic if generation fails
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()
+            }
+        }
     }
 
     /// Restart the daemon to reload credentials

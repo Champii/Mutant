@@ -39,6 +39,7 @@ serde_json = "1.0.133"
 eframe = "0.31.1"
 lazy_static = "1.5.0"
 futures = "0.3.31"
+tiny-bip39 = { version = "2.0.0", default-features = false }
 
 web-time = { version = "1.1.0", features = [ "serde" ] }
 

@@ -2322,7 +2322,7 @@ dependencies = [
  "aes-gcm",
  "chacha20poly1305",
  "hmac 0.11.0",
- "pbkdf2",
+ "pbkdf2 0.9.0",
  "rand 0.8.5",
  "sha2 0.9.9",
  "zeroize",
@@ -6256,6 +6256,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_cbor",
  "serde_json",
+ "tiny-bip39",
  "tokio",
  "uuid",
  "wasm-bindgen",
@@ -7240,6 +7241,16 @@ dependencies = [
  "crypto-mac",
  "hmac 0.11.0",
  "sha2 0.9.9",
+]
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest 0.10.7",
+ "hmac 0.12.1",
 ]
 
 [[package]]
@@ -9639,6 +9650,22 @@ checksum = "3526739392ec93fd8b359c8e98514cb3e8e021beb4e5f597b00a0221f8ed8a49"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tiny-bip39"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a30fd743a02bf35236f6faf99adb03089bb77e91c998dac2c2ad76bb424f668c"
+dependencies = [
+ "once_cell",
+ "pbkdf2 0.12.2",
+ "rustc-hash 1.1.0",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "unicode-normalization",
+ "wasm-bindgen",
+ "zeroize",
 ]
 
 [[package]]
