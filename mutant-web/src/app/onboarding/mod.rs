@@ -495,15 +495,13 @@ pub fn colony_init_state() -> Arc<RwLock<ColonyInitState>> {
 
 /// Check if colony initialization is currently active (anywhere, not just onboarding)
 pub fn is_colony_initializing() -> bool {
-    // First check the onboarding state
+    // Only check the colony initialization state to avoid recursion
+    // The colony progress events are handled separately in colony_window
     if let Ok(state) = COLONY_INIT_STATE.try_read() {
-        if state.is_initializing {
-            return true;
-        }
+        state.is_initializing
+    } else {
+        false
     }
-
-    // Also check the existing colony progress events system
-    crate::app::colony_window::is_colony_operation_in_progress()
 }
 
 /// Start colony initialization tracking

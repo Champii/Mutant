@@ -6,12 +6,16 @@ use crate::app::theme::MutantColors;
 /// Colony initialization progress modal
 pub struct ColonyInitModal {
     animation_time: f32,
+    last_should_show: bool,
+    last_progress: f32,
 }
 
 impl Default for ColonyInitModal {
     fn default() -> Self {
         Self {
             animation_time: 0.0,
+            last_should_show: false,
+            last_progress: -1.0,
         }
     }
 }
@@ -19,22 +23,34 @@ impl Default for ColonyInitModal {
 impl ColonyInitModal {
     /// Show the colony initialization modal if colony initialization is in progress
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
-        log::info!("ColonyInitModal::show() called");
-
         // Use the existing colony progress tracking system from colony_window
         let should_show = crate::app::colony_window::is_colony_operation_in_progress();
 
         // Also check the progress to see what we have
         let (progress, status) = crate::app::colony_window::get_colony_operation_progress();
 
-        log::info!("Colony init modal: should_show={}, progress={}, status={:?}", should_show, progress, status);
+        // TEMPORARY: Force show modal for testing if we detect any colony activity
+        // Check if we're in the middle of onboarding completion but colony operations are happening
+        // Also show if we have a "completed" status but progress is 100% (recent completion)
+        let force_show = !crate::app::onboarding::is_onboarding_active() &&
+                        progress >= 1.0 &&
+                        status.as_ref().map_or(false, |s| s.contains("initialization completed") || s.contains("Colony initialization completed"));
 
-        if !should_show {
-            log::info!("Colony init modal: not showing (should_show=false)");
+        let final_should_show = should_show || force_show;
+
+        // Only log when state changes to reduce spam
+        if final_should_show != self.last_should_show || (progress - self.last_progress).abs() > 0.01 {
+            log::info!("Colony init modal: should_show={}, force_show={}, final_should_show={}, progress={:.2}, status={:?}",
+                      should_show, force_show, final_should_show, progress, status);
+            self.last_should_show = final_should_show;
+            self.last_progress = progress;
+        }
+
+        if !final_should_show {
             return false;
         }
 
-        log::info!("Colony init modal: SHOWING MODAL!");
+        log::debug!("Colony init modal: SHOWING MODAL!");
 
         // Update animation
         self.animation_time += ctx.input(|i| i.stable_dt);

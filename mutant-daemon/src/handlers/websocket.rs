@@ -135,15 +135,97 @@ pub async fn handle_ws(ws: WebSocket, mutant: Arc<MutAnt>, tasks: TaskMap, activ
 
 /// Check if colony initialization is needed and start it with progress tracking
 async fn check_and_start_colony_initialization(mutant: Arc<MutAnt>, update_tx: mpsc::UnboundedSender<Response>) {
+    log::info!("WebSocket: Checking colony initialization status...");
+
     // Check if colony manager is already initialized
     if super::colony::is_colony_initialized() {
-        log::debug!("Colony manager already initialized, skipping initialization check");
+        log::info!("WebSocket: Colony manager already initialized, skipping initialization check");
         return;
     }
 
     // Check if colony initialization is already in progress
-    if super::colony::is_colony_initialization_in_progress() {
-        log::debug!("Colony initialization already in progress, skipping duplicate initialization");
+    let is_in_progress = super::colony::is_colony_initialization_in_progress();
+    log::info!("WebSocket: Colony initialization in progress: {}", is_in_progress);
+
+    if is_in_progress {
+        log::info!("WebSocket: Colony initialization already in progress, starting progress tracking for WebSocket client");
+
+        // Even if initialization is in progress, we should start progress tracking for this WebSocket client
+        // The existing initialization might not be sending progress events to WebSocket clients
+
+        // Get the stored initialization parameters
+        let init_params = match super::colony::get_colony_init_params() {
+            Some(params) => params,
+            None => {
+                log::warn!("Colony initialization parameters not set, cannot track progress for WebSocket client");
+                return;
+            }
+        };
+
+        let (_network_choice, private_key_hex) = init_params;
+
+        // Check if we have the necessary credentials
+        let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
+        if private_key_hex.is_none() && !has_colony_mnemonic {
+            log::debug!("No private key or colony mnemonic available, cannot track colony progress");
+            return;
+        }
+
+        // Get wallet from MutAnt
+        let _wallet = match mutant.get_wallet().await {
+            Ok(wallet) => wallet,
+            Err(e) => {
+                log::warn!("Failed to get wallet for colony progress tracking: {}", e);
+                return;
+            }
+        };
+
+        // Start progress tracking for the existing colony initialization
+        tokio::spawn(async move {
+            log::info!("Starting colony progress tracking for existing initialization");
+
+            // Send initial progress events to inform the WebSocket client about ongoing operations
+            log::info!("WebSocket: Sending InitializationStarted event");
+            let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
+                event: mutant_protocol::ColonyEvent::InitializationStarted,
+                operation_id: Some("websocket_tracking".to_string()),
+            }));
+
+            let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
+                event: mutant_protocol::ColonyEvent::UserPodCheckStarted,
+                operation_id: Some("websocket_tracking".to_string()),
+            }));
+
+            // Monitor the colony initialization progress and send updates
+            let mut last_check = std::time::Instant::now();
+            while super::colony::is_colony_initialization_in_progress() {
+                // Send periodic progress updates
+                if last_check.elapsed().as_secs() >= 2 {
+                    let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
+                        event: mutant_protocol::ColonyEvent::Progress {
+                            operation: "Colony Initialization".to_string(),
+                            message: "Initializing colony system...".to_string(),
+                            current: None,
+                            total: None,
+                        },
+                        operation_id: Some("websocket_tracking".to_string()),
+                    }));
+                    last_check = std::time::Instant::now();
+                }
+
+                // Wait a bit before checking again
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+
+            // Send completion event
+            let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
+                event: mutant_protocol::ColonyEvent::InitializationCompleted,
+                operation_id: Some("websocket_tracking".to_string()),
+            }));
+
+            log::info!("Colony initialization progress tracking completed");
+        });
+
         return;
     }
 

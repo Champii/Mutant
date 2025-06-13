@@ -262,6 +262,9 @@ pub async fn reload_mutant_instance() -> Result<(), Error> {
                 let private_key_clone = actual_private_key.clone();
 
                 tokio::spawn(async move {
+                    // Use the regular init_colony_manager for credential reload
+                    // The progress-tracking version is used when WebSocket clients connect
+                    // and detect that initialization is in progress
                     match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
                         Ok(_) => {
                             log::info!("Colony manager reinitialized successfully");

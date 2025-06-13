@@ -1512,12 +1512,9 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_counter += 1;
-        log::debug!("=== MyApp::update() called - Frame {} ===", self.frame_counter);
 
         // Apply the MutAnt theme
-        log::debug!("Frame {}: Applying MutAnt theme...", self.frame_counter);
         app::theme::apply_mutant_theme(ctx);
-        log::debug!("Frame {}: MutAnt theme applied successfully", self.frame_counter);
 
         // Initialize onboarding check on first frame
         if !self.onboarding_initialized {
@@ -1555,9 +1552,7 @@ impl eframe::App for MyApp {
 
         // Check if colony initialization is active and show the modal (even if onboarding is complete)
         // Use the same colony progress system as the modal itself
-        log::debug!("Frame {}: About to call colony_init_modal.show(ctx)...", self.frame_counter);
-        let modal_result = self.colony_init_modal.show(ctx);
-        log::debug!("Frame {}: colony_init_modal.show(ctx) returned: {}", self.frame_counter, modal_result);
+        let _modal_result = self.colony_init_modal.show(ctx);
         // Note: We don't return here - the colony modal should overlay the main interface
 
         log::debug!("Starting main UI rendering...");

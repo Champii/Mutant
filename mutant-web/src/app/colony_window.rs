@@ -1947,14 +1947,23 @@ impl ColonyWindow {
 pub fn is_colony_operation_in_progress() -> bool {
     // During onboarding, always show the modal if we're in colony initialization step
     // This covers the entire colony initialization process, including initial pod creation
-    if crate::app::onboarding::is_colony_initializing() {
+    let is_initializing = crate::app::onboarding::is_colony_initializing();
+    if is_initializing {
         log::debug!("is_colony_operation_in_progress: colony initialization in progress, returning true");
         return true;
     }
 
     // Check if there are recent colony initialization events
     if let Ok(events) = COLONY_PROGRESS_EVENTS.try_lock() {
-        log::debug!("is_colony_operation_in_progress: checking {} events", events.len());
+        let events_count = events.len();
+        log::debug!("is_colony_operation_in_progress: checking {} events", events_count);
+
+        // If we have no events but we know colony operations might be happening,
+        // we should still check for other indicators
+        if events_count == 0 {
+            log::debug!("is_colony_operation_in_progress: no events in queue, checking other indicators");
+        }
+
         // Look for recent initialization events
         for event in events.iter().rev().take(10) { // Check last 10 events
             log::debug!("is_colony_operation_in_progress: checking event: {:?}", event.event);
@@ -1977,6 +1986,8 @@ pub fn is_colony_operation_in_progress() -> bool {
             }
         }
     }
+
+    log::debug!("is_colony_operation_in_progress: no active operations found, returning false");
     false
 }
 
