@@ -178,15 +178,10 @@ impl OnboardingState {
         self.colony_initialization_progress = 0.0;
         self.colony_initialization_status = Some("Preparing colony initialization...".to_string());
 
-        // Step 1: Monitor connection before starting
-        log::info!("Step 1: Checking connection status before colony initialization");
-        if let Err(e) = self.monitor_connection_during_operation("colony_initialization").await {
-            self.error_message = Some(format!("Connection check failed: {}", e));
-            self.is_loading = false;
-            return Err(e);
-        }
+        // Step 1: Start colony initialization (simplified - no connection monitoring)
+        log::info!("Step 1: Starting colony initialization");
         self.colony_initialization_progress = 0.1;
-        self.colony_initialization_status = Some("Connection verified, starting colony initialization...".to_string());
+        self.colony_initialization_status = Some("Starting colony initialization...".to_string());
 
         // Step 2: Initialize colony
         log::info!("Step 2: Sending colony initialization request");
@@ -201,32 +196,20 @@ impl OnboardingState {
                     self.colony_initialization_status = Some("Colony initialization completed! Preparing credential reload...".to_string());
                     log::info!("Colony initialization completed successfully, now reloading credentials");
 
-                    // Step 3: Check connection before credential reload
-                    log::info!("Step 3: Checking connection before credential reload");
-                    if let Err(e) = self.check_connection_status().await {
-                        log::warn!("Connection check before reload failed: {}", e);
-                        // Continue anyway, but note the issue
-                        self.colony_initialization_status = Some("Colony initialized, connection unstable during reload...".to_string());
-                    } else {
-                        self.colony_initialization_progress = 0.7;
-                        self.colony_initialization_status = Some("Connection stable, reloading credentials...".to_string());
-                    }
+                    // Step 3: Reload credentials (simplified)
+                    log::info!("Step 3: Reloading credentials");
+                    self.colony_initialization_progress = 0.7;
+                    self.colony_initialization_status = Some("Reloading credentials...".to_string());
 
                     // Step 4: Reload credentials without restarting the daemon
-                    log::info!("Step 4: Reloading credentials");
-                    match self.reload_credentials_with_monitoring().await {
+                    match self.reload_credentials().await {
                         Ok(_) => {
                             self.colony_initialization_progress = 0.9;
-                            self.colony_initialization_status = Some("Credentials reloaded, finalizing setup...".to_string());
+                            self.colony_initialization_status = Some("Finalizing setup...".to_string());
 
-                            // Step 5: Final connection verification
-                            log::info!("Step 5: Final connection verification");
-                            if let Err(e) = self.check_connection_status().await {
-                                log::warn!("Final connection check failed: {}", e);
-                                self.colony_initialization_status = Some("Setup complete (connection may be unstable)".to_string());
-                            } else {
-                                self.colony_initialization_status = Some("Setup completed successfully!".to_string());
-                            }
+                            // Step 5: Finalize setup
+                            log::info!("Step 5: Finalizing setup");
+                            self.colony_initialization_status = Some("Setup completed successfully!".to_string());
 
                             self.current_step = OnboardingStep::Completed;
                             self.needs_onboarding = false; // Mark onboarding as fully completed
