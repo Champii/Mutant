@@ -172,73 +172,34 @@ impl OnboardingState {
         }
     }
 
-    /// Initialize colony with enhanced progress tracking and connection monitoring
+    /// Initialize colony - simplified to just trigger daemon initialization
     pub async fn initialize_colony(&mut self) -> Result<(), String> {
         self.is_loading = true;
         self.error_message = None;
-        self.colony_initialization_progress = 0.0;
-        self.colony_initialization_status = Some("Preparing colony initialization...".to_string());
-
-        // Step 1: Start colony initialization (simplified - no connection monitoring)
-        log::info!("Step 1: Starting colony initialization");
         self.colony_initialization_progress = 0.1;
         self.colony_initialization_status = Some("Starting colony initialization...".to_string());
 
-        // Update global colony initialization state
-        update_colony_initialization_progress(0.1, Some("Starting colony initialization...".to_string()));
-
-        // Step 2: Initialize colony
-        log::info!("Step 2: Sending colony initialization request");
+        log::info!("Starting colony initialization");
         let ctx = context();
-        self.colony_initialization_progress = 0.2;
-        self.colony_initialization_status = Some("Initializing colony system...".to_string());
-
-        // Update global colony initialization state
-        update_colony_initialization_progress(0.2, Some("Initializing colony system...".to_string()));
 
         match ctx.initialize_colony().await {
             Ok(response) => {
                 if response.success {
-                    self.colony_initialization_progress = 0.6;
-                    self.colony_initialization_status = Some("Colony initialization completed! Preparing credential reload...".to_string());
-                    log::info!("Colony initialization completed successfully, now reloading credentials");
+                    log::info!("Colony initialization request sent successfully, now reloading credentials");
 
-                    // Update global colony initialization state
-                    update_colony_initialization_progress(0.6, Some("Colony initialization completed! Preparing credential reload...".to_string()));
-
-                    // Step 3: Reload credentials (simplified)
-                    log::info!("Step 3: Reloading credentials");
-                    self.colony_initialization_progress = 0.7;
-                    self.colony_initialization_status = Some("Reloading credentials...".to_string());
-
-                    // Update global colony initialization state
-                    update_colony_initialization_progress(0.7, Some("Reloading credentials...".to_string()));
-
-                    // Step 4: Reload credentials without restarting the daemon
+                    // Reload credentials to activate the new colony setup
                     match self.reload_credentials().await {
                         Ok(_) => {
-                            self.colony_initialization_progress = 0.7;
-                            self.colony_initialization_status = Some("Credentials reloaded, waiting for daemon colony initialization...".to_string());
+                            log::info!("Credentials reloaded successfully");
 
-                            // Update global colony initialization state
-                            update_colony_initialization_progress(0.7, Some("Credentials reloaded, waiting for daemon colony initialization...".to_string()));
-
-                            // Step 5: Wait for daemon to complete colony initialization
-                            log::info!("Step 5: Waiting for daemon colony initialization to complete");
-                            self.colony_initialization_progress = 0.8;
-                            self.colony_initialization_status = Some("Daemon is initializing colony system...".to_string());
-
-                            // Update global colony initialization state
-                            update_colony_initialization_progress(0.8, Some("Daemon is initializing colony system...".to_string()));
-
-                            // Wait for the daemon to complete its colony initialization
-                            // The colony modal will show the real progress from the daemon
-                            // We'll mark onboarding as complete but keep colony init active
+                            // Mark onboarding as complete - the colony modal will show the real daemon progress
                             self.current_step = OnboardingStep::Completed;
-                            self.needs_onboarding = false; // Mark onboarding as fully completed
+                            self.needs_onboarding = false;
+                            self.colony_initialization_progress = 1.0;
+                            self.colony_initialization_status = Some("Onboarding completed! Colony initialization continuing...".to_string());
                             self.is_loading = false;
 
-                            log::info!("Onboarding completed successfully - daemon will continue colony initialization in background");
+                            log::info!("Onboarding completed successfully - daemon will handle colony initialization");
                             Ok(())
                         }
                         Err(e) => {
@@ -250,9 +211,6 @@ impl OnboardingState {
                             self.colony_initialization_status = Some("Completed (credential reload had issues)".to_string());
                             self.is_loading = false;
 
-                            // Update global colony initialization state - completed with warning
-                            update_colony_initialization_progress(1.0, Some("Completed (credential reload had issues)".to_string()));
-
                             Ok(())
                         }
                     }
@@ -260,10 +218,6 @@ impl OnboardingState {
                     let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
                     self.error_message = Some(error.clone());
                     self.is_loading = false;
-
-                    // Update global colony initialization state with error
-                    set_colony_initialization_error(error.clone());
-
                     Err(error)
                 }
             }
@@ -271,10 +225,6 @@ impl OnboardingState {
                 let error = format!("Failed to initialize colony: {}", e);
                 self.error_message = Some(error.clone());
                 self.is_loading = false;
-
-                // Update global colony initialization state with error
-                set_colony_initialization_error(error.clone());
-
                 Err(error)
             }
         }

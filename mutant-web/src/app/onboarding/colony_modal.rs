@@ -23,31 +23,21 @@ impl Default for ColonyInitModal {
 impl ColonyInitModal {
     /// Show the colony initialization modal if colony initialization is in progress
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
-        // Use the existing colony progress tracking system from colony_window
+        // Use the existing colony progress tracking system from colony_window - that's it!
         let should_show = crate::app::colony_window::is_colony_operation_in_progress();
-
-        // Also check the progress to see what we have
         let (progress, status) = crate::app::colony_window::get_colony_operation_progress();
 
-        // Also check if onboarding colony initialization is active
-        let onboarding_colony_active = crate::app::onboarding::is_colony_initializing();
-
-        // Show the modal if colony operations are in progress OR onboarding colony init is active
-        let final_should_show = should_show || onboarding_colony_active;
-
         // Only log when state changes to reduce spam
-        if final_should_show != self.last_should_show || (progress - self.last_progress).abs() > 0.01 {
-            log::info!("Colony init modal: should_show={}, onboarding_active={}, final_should_show={}, progress={:.2}, status={:?}",
-                      should_show, onboarding_colony_active, final_should_show, progress, status);
-            self.last_should_show = final_should_show;
+        if should_show != self.last_should_show || (progress - self.last_progress).abs() > 0.01 {
+            log::info!("Colony init modal: should_show={}, progress={:.2}, status={:?}",
+                      should_show, progress, status);
+            self.last_should_show = should_show;
             self.last_progress = progress;
         }
 
-        if !final_should_show {
+        if !should_show {
             return false;
         }
-
-        log::debug!("Colony init modal: SHOWING MODAL!");
 
         // Update animation
         self.animation_time += ctx.input(|i| i.stable_dt);
@@ -72,7 +62,7 @@ impl ColonyInitModal {
     }
 
     fn draw_content(&mut self, ui: &mut egui::Ui) {
-        // Get progress from the existing colony progress system
+        // Get progress from the existing colony progress system - reuse what's already working!
         let (progress, status) = crate::app::colony_window::get_colony_operation_progress();
 
         ui.vertical_centered(|ui| {
@@ -93,7 +83,7 @@ impl ColonyInitModal {
 
             ui.add_space(20.0);
 
-            // Progress bar
+            // Progress bar - shows the REAL progress from colony_window
             let progress_bar = egui::ProgressBar::new(progress)
                 .fill(MutantColors::ACCENT_ORANGE)
                 .animate(true);
@@ -110,17 +100,10 @@ impl ColonyInitModal {
 
             ui.add_space(10.0);
 
-            // Status message from colony progress system
+            // Status message from colony progress system - shows the REAL status
             if let Some(status) = status {
                 ui.label(
                     egui::RichText::new(status)
-                        .font(FontId::proportional(14.0))
-                        .color(MutantColors::TEXT_SECONDARY)
-                );
-            } else if progress <= 0.1 {
-                // If we have very low progress and no status, show a helpful message
-                ui.label(
-                    egui::RichText::new("Connecting to daemon and starting initialization...")
                         .font(FontId::proportional(14.0))
                         .color(MutantColors::TEXT_SECONDARY)
                 );

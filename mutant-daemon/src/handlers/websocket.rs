@@ -187,118 +187,24 @@ async fn check_and_start_colony_initialization(mutant: Arc<MutAnt>, update_tx: m
             }
         };
 
-        // Start progress tracking for the existing colony initialization
+        // Colony manager is already initialized, but we might need to ensure user pod exists
+        // Let's trigger the user pod creation process with real progress events
         tokio::spawn(async move {
-            log::info!("Starting colony progress tracking for existing initialization");
+            log::info!("Colony manager already initialized, checking user pod with progress tracking");
 
-            // Send detailed progress events to track the actual colony operations happening
-            log::info!("WebSocket: Starting detailed colony progress tracking");
-
-            // Send initial progress events
-            let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
-                event: mutant_protocol::ColonyEvent::InitializationStarted,
-                operation_id: Some("websocket_tracking".to_string()),
-            }));
-
-            // Track the different phases of colony initialization
-            let mut current_phase = 0;
-            let phases = vec![
-                (0.1, "Initializing colony manager..."),
-                (0.2, "Setting up data store..."),
-                (0.3, "Configuring key store..."),
-                (0.4, "Deriving colony keys..."),
-                (0.5, "Initializing graph database..."),
-                (0.6, "Checking user pod..."),
-                (0.7, "Syncing from network..."),
-                (0.8, "Creating user pod..."),
-                (0.9, "Uploading pod data..."),
-                (0.95, "Finalizing setup..."),
-            ];
-
-            // Monitor the colony initialization progress and send realistic updates
-            let start_time = std::time::Instant::now();
-            let mut last_update = std::time::Instant::now();
-            let mut tracking_active = true;
-
-            // If colony manager is already initialized, start from a later phase
-            if is_initialized {
-                current_phase = 5; // Start from "Checking user pod..."
-                log::info!("WebSocket: Colony manager already initialized, starting from user pod phase");
-            }
-
-            while tracking_active {
-                let elapsed = start_time.elapsed().as_secs();
-
-                // Check if colony operations are still happening
-                let still_in_progress = super::colony::is_colony_initialization_in_progress();
-
-                // If colony manager is initialized but operations stopped, we're probably done
-                if is_initialized && !still_in_progress && elapsed > 5 {
-                    log::info!("WebSocket: Colony operations appear to be complete");
-                    tracking_active = false;
-                    break;
-                }
-
-                // If not initialized, keep checking the initialization flag
-                if !is_initialized && !still_in_progress {
-                    log::info!("WebSocket: Colony initialization completed");
-                    tracking_active = false;
-                    break;
-                }
-
-                // Send progress updates every 2 seconds
-                if last_update.elapsed().as_secs() >= 2 {
-                    // Advance through phases based on time elapsed and current state
-                    if current_phase < phases.len() {
-                        let (progress, message) = phases[current_phase];
-
-                        let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
-                            event: mutant_protocol::ColonyEvent::Progress {
-                                operation: "Colony Initialization".to_string(),
-                                message: message.to_string(),
-                                current: Some((progress * 100.0) as usize),
-                                total: Some(100),
-                            },
-                            operation_id: Some("websocket_tracking".to_string()),
-                        }));
-
-                        log::info!("WebSocket: Sent progress update: {:.1}% - {}", progress * 100.0, message);
-                        current_phase += 1;
+            match super::colony::get_colony_manager().await {
+                Ok(colony_manager) => {
+                    // Ensure user pod exists with progress tracking
+                    if let Err(e) = colony_manager.ensure_user_pod_exists_with_progress(update_tx.clone()).await {
+                        log::error!("Failed to ensure user pod exists: {}", e);
                     } else {
-                        // We've gone through all phases, send a generic progress update
-                        let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
-                            event: mutant_protocol::ColonyEvent::Progress {
-                                operation: "Colony Initialization".to_string(),
-                                message: "Completing initialization...".to_string(),
-                                current: Some(98),
-                                total: Some(100),
-                            },
-                            operation_id: Some("websocket_tracking".to_string()),
-                        }));
-
-                        log::info!("WebSocket: Sent completion progress update: 98%");
+                        log::info!("User pod verification/creation completed with progress tracking");
                     }
-
-                    last_update = std::time::Instant::now();
                 }
-
-                // Wait before checking again
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-                // Safety timeout - don't track forever
-                if elapsed > 60 {
-                    log::warn!("WebSocket: Colony initialization tracking timeout after 60 seconds");
-                    break;
+                Err(e) => {
+                    log::warn!("Colony manager not available for user pod verification: {}", e);
                 }
             }
-
-            // Send completion event
-            let _ = update_tx.send(mutant_protocol::Response::ColonyProgress(mutant_protocol::ColonyProgressResponse {
-                event: mutant_protocol::ColonyEvent::InitializationCompleted,
-                operation_id: Some("websocket_tracking".to_string()),
-            }));
-
-            log::info!("Colony initialization progress tracking completed");
         });
 
         return;

@@ -31,8 +31,7 @@ mod macros;
 mod request;
 mod response;
 
-// Re-export the colony progress callback function for WASM
-#[cfg(target_arch = "wasm32")]
+// Re-export the colony progress callback function
 pub use response::set_colony_progress_callback;
 
 use crate::error::ClientError;

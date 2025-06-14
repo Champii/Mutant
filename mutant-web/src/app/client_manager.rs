@@ -172,22 +172,41 @@ pub fn init_client_manager() {
 fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<ClientCommand>) {
     spawn_local(async move {
         // Set up the colony progress callback with error handling
-        #[cfg(target_arch = "wasm32")]
-        {
-            log::info!("CLIENT MANAGER: Setting up colony progress callback...");
-            mutant_client::set_colony_progress_callback(|event, operation_id| {
-                log::info!("CLIENT MANAGER: Received colony progress event via callback: {:?}", event);
-                // Add extra safety by wrapping the callback in a simple error handler
-                // Don't use catch_unwind as it's not properly supported in WebAssembly
-                crate::app::colony_window::add_colony_progress_event(event.clone(), operation_id.clone());
+        log::info!("CLIENT MANAGER: Setting up colony progress callback...");
+        mutant_client::set_colony_progress_callback(|event, operation_id| {
+            log::info!("CLIENT MANAGER: Received colony progress event via callback: {:?}", event);
 
-                // Also update the global colony initialization state
-                crate::app::onboarding::handle_daemon_colony_progress(event, operation_id);
+            // Add the event to colony_window for processing - this is the main system
+            crate::app::colony_window::add_colony_progress_event(event.clone(), operation_id.clone());
 
-                log::info!("CLIENT MANAGER: Colony progress event processed successfully");
-            });
-            log::info!("CLIENT MANAGER: Colony progress callback setup completed");
-        }
+            // Also trigger colony initialization state when we receive initialization events
+            use mutant_protocol::ColonyEvent;
+            match &event {
+                ColonyEvent::InitializationStarted |
+                ColonyEvent::DataStoreInitStarted |
+                ColonyEvent::KeyStoreInitStarted |
+                ColonyEvent::KeyDerivationStarted |
+                ColonyEvent::GraphInitStarted |
+                ColonyEvent::UserPodCheckStarted |
+                ColonyEvent::UserPodCreationStarted => {
+                    // Start colony initialization tracking
+                    crate::app::onboarding::start_colony_initialization(Some("Colony initialization in progress...".to_string()));
+                    log::info!("CLIENT MANAGER: Started colony initialization tracking for event: {:?}", event);
+                }
+                ColonyEvent::InitializationCompleted => {
+                    // Complete colony initialization tracking
+                    crate::app::onboarding::complete_colony_initialization();
+                    log::info!("CLIENT MANAGER: Completed colony initialization tracking");
+                }
+                _ => {
+                    // For other events, just log them
+                    log::debug!("CLIENT MANAGER: Processed colony event: {:?}", event);
+                }
+            }
+
+            log::info!("CLIENT MANAGER: Colony progress event processed successfully");
+        });
+        log::info!("CLIENT MANAGER: Colony progress callback setup completed");
 
         // Create a single client that will be used for all operations
         let mut client = MutantClient::new();

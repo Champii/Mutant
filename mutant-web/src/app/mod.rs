@@ -254,7 +254,7 @@ impl From<colony_window::ColonyWindow> for WindowType {
 // }
 
 pub async fn init() {
-    // Get the shared context
+    // Get the shared context (colony progress tracking is already initialized in context constructor)
     let ctx = context::context();
 
     // Fetch keys using the context

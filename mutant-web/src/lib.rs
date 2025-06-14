@@ -35,6 +35,11 @@ pub fn start() {
 }
 
 pub async fn async_start() {
+    // Initialize the colony progress tracking system FIRST
+    // This must happen before context initialization so the callback can receive events
+    app::colony_window::init_colony_progress_tracking();
+    log::info!("Colony progress tracking system initialized early");
+
     // Initialize context and wait for it to be ready
     init_context().await;
 

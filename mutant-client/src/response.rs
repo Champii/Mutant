@@ -18,15 +18,12 @@ use super::MutantClient;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-#[cfg(target_arch = "wasm32")]
 use std::sync::OnceLock;
 
-// Global callback for colony progress events (WASM only)
-#[cfg(target_arch = "wasm32")]
+// Global callback for colony progress events
 static COLONY_PROGRESS_CALLBACK: OnceLock<fn(ColonyEvent, Option<String>)> = OnceLock::new();
 
-/// Set the global colony progress callback (WASM only)
-#[cfg(target_arch = "wasm32")]
+/// Set the global colony progress callback
 pub fn set_colony_progress_callback(callback: fn(ColonyEvent, Option<String>)) {
     let _ = COLONY_PROGRESS_CALLBACK.set(callback);
 }

@@ -2132,6 +2132,24 @@ pub fn get_colony_operation_progress() -> (f32, Option<String>) {
     (0.0, None)
 }
 
+/// Initialize the colony progress tracking system
+/// This should be called at app startup to ensure the progress tracking
+/// is ready to receive events even before the colony window is opened
+pub fn init_colony_progress_tracking() {
+    log::info!("Initializing colony progress tracking system");
+
+    // Initialize the mutex by accessing it once
+    // This ensures the lazy static is initialized
+    match COLONY_PROGRESS_EVENTS.try_lock() {
+        Ok(events) => {
+            log::info!("Colony progress tracking system initialized successfully with {} existing events", events.len());
+        }
+        Err(e) => {
+            log::warn!("Colony progress tracking system initialization had issues: {:?}", e);
+        }
+    }
+}
+
 /// Add a colony progress event to the global state for UI updates
 pub fn add_colony_progress_event(
     event: mutant_protocol::ColonyEvent,
