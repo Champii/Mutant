@@ -22,6 +22,30 @@ static GLOBAL_MUTANT: OnceCell<Arc<RwLock<Arc<MutAnt>>>> = OnceCell::const_new()
 // Store initialization parameters for reloading
 static INIT_PARAMS: OnceCell<Arc<RwLock<(NetworkChoice, bool)>>> = OnceCell::const_new();
 
+/// Check if onboarding is needed by examining missing credentials and config
+fn check_if_onboarding_needed() -> bool {
+    use std::env;
+    use xdg::BaseDirectories;
+
+    // Check for missing private key
+    let missing_private_key = env::var("PRIVATE_KEY").is_err() || env::var("PRIVATE_KEY").unwrap_or_default().is_empty();
+
+    // Check for missing colony mnemonic
+    let missing_colony_mnemonic = env::var("COLONY_MNEMONIC").is_err() || env::var("COLONY_MNEMONIC").unwrap_or_default().is_empty();
+
+    // Check for missing config directory
+    let missing_config_dir = BaseDirectories::with_prefix("mutant")
+        .map(|xdg_dirs| !xdg_dirs.get_config_home().exists())
+        .unwrap_or(true);
+
+    let needs_onboarding = missing_private_key || missing_colony_mnemonic || missing_config_dir;
+
+    log::info!("Onboarding status check: needs_onboarding={}, missing_private_key={}, missing_colony_mnemonic={}, missing_config_dir={}",
+               needs_onboarding, missing_private_key, missing_colony_mnemonic, missing_config_dir);
+
+    needs_onboarding
+}
+
 /// Helper function to initialize MutAnt based on network choice and private key
 /// Returns (MutAnt instance, is_public_only, actual_private_key_used)
 async fn init_mutant(network_choice: NetworkChoice, private_key: Option<String>, random_testnet_key: bool) -> Result<(MutAnt, bool, Option<String>), Error> {
@@ -189,6 +213,8 @@ pub fn get_global_mutant() -> Option<Arc<MutAnt>> {
     })
 }
 
+
+
 /// Reload the MutAnt instance with new credentials
 pub async fn reload_mutant_instance() -> Result<(), Error> {
     log::info!("Starting MutAnt instance reload...");
@@ -346,26 +372,34 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
                     Some(env_key)
                 }
                 _ => {
-                    log::info!("No PRIVATE_KEY environment variable found, trying to scan for wallets");
+                    // Check if onboarding is needed before scanning for wallets
+                    let needs_onboarding = check_if_onboarding_needed();
+                    if needs_onboarding {
+                        log::info!("Onboarding required - skipping wallet scan and running in public-only mode");
+                        log::info!("Wallet will be configured during onboarding process");
+                        None
+                    } else {
+                        log::info!("No PRIVATE_KEY environment variable found, trying to scan for wallets");
 
-                    // Try to scan for wallets
-                    match wallet::scan_and_select_wallet().await {
-                        Ok((selected_private_key, pk_hex)) => {
-                            // Save the selected wallet for future use
-                            config.set_public_key(network_choice, pk_hex.clone());
-                            config.save()?;
-                            log::info!(
-                                "Saved newly selected public key {} to config for network {:?}",
-                                pk_hex,
-                                network_choice
-                            );
-                            Some(selected_private_key)
-                        }
-                        Err(e) => {
-                            // No wallet found, initialize in public-only mode
-                            log::warn!("No wallet found: {}. Initializing in public-only mode.", e);
-                            log::info!("Only public downloads (mutant get -p) will be available.");
-                            None
+                        // Try to scan for wallets
+                        match wallet::scan_and_select_wallet().await {
+                            Ok((selected_private_key, pk_hex)) => {
+                                // Save the selected wallet for future use
+                                config.set_public_key(network_choice, pk_hex.clone());
+                                config.save()?;
+                                log::info!(
+                                    "Saved newly selected public key {} to config for network {:?}",
+                                    pk_hex,
+                                    network_choice
+                                );
+                                Some(selected_private_key)
+                            }
+                            Err(e) => {
+                                // No wallet found, initialize in public-only mode
+                                log::warn!("No wallet found: {}. Initializing in public-only mode.", e);
+                                log::info!("Only public downloads (mutant get -p) will be available.");
+                                None
+                            }
                         }
                     }
                 }
@@ -394,36 +428,43 @@ pub async fn run(options: AppOptions) -> Result<(), Error> {
         log::info!("Storing colony initialization parameters for on-demand initialization...");
         crate::handlers::colony::set_colony_init_params(network_choice, actual_private_key.clone()).await;
 
-        log::info!("Initializing colony manager at daemon startup...");
+        // Check if onboarding is needed before automatically initializing colony manager
+        let needs_onboarding = check_if_onboarding_needed();
+        if needs_onboarding {
+            log::info!("Onboarding required - skipping automatic colony manager initialization at startup");
+            log::info!("Colony manager will be initialized after user completes onboarding");
+        } else {
+            log::info!("Onboarding completed - initializing colony manager at daemon startup...");
 
-        // Get wallet from MutAnt for colony initialization
-        match mutant.get_wallet().await {
-            Ok(wallet) => {
-                // Check if colony manager is already initialized to avoid duplicate initialization
-                if crate::handlers::colony::is_colony_initialized() {
-                    log::info!("Colony manager already initialized, skipping startup initialization");
-                } else {
-                    // Spawn colony manager initialization as async task to avoid blocking daemon startup
-                    let wallet_clone = wallet.clone();
-                    let network_choice_clone = network_choice;
-                    let private_key_clone = actual_private_key.clone();
+            // Get wallet from MutAnt for colony initialization
+            match mutant.get_wallet().await {
+                Ok(wallet) => {
+                    // Check if colony manager is already initialized to avoid duplicate initialization
+                    if crate::handlers::colony::is_colony_initialized() {
+                        log::info!("Colony manager already initialized, skipping startup initialization");
+                    } else {
+                        // Spawn colony manager initialization as async task to avoid blocking daemon startup
+                        let wallet_clone = wallet.clone();
+                        let network_choice_clone = network_choice;
+                        let private_key_clone = actual_private_key.clone();
 
-                    tokio::spawn(async move {
-                        // Use the regular init_colony_manager for startup (no WebSocket clients yet)
-                        // Progress will be tracked when WebSocket clients connect if initialization is still ongoing
-                        match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
-                            Ok(_) => {
-                                log::info!("Colony manager initialized successfully at daemon startup");
+                        tokio::spawn(async move {
+                            // Use the regular init_colony_manager for startup (no WebSocket clients yet)
+                            // Progress will be tracked when WebSocket clients connect if initialization is still ongoing
+                            match crate::handlers::colony::init_colony_manager(wallet_clone, network_choice_clone, private_key_clone).await {
+                                Ok(_) => {
+                                    log::info!("Colony manager initialized successfully at daemon startup");
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to initialize colony manager at startup: {}. Colony features will be available on-demand.", e);
+                                }
                             }
-                            Err(e) => {
-                                log::warn!("Failed to initialize colony manager at startup: {}. Colony features will be available on-demand.", e);
-                            }
-                        }
-                    });
+                        });
+                    }
                 }
-            }
-            Err(e) => {
-                log::warn!("Failed to get wallet for colony initialization: {}. Colony features will be available on-demand.", e);
+                Err(e) => {
+                    log::warn!("Failed to get wallet for colony initialization: {}. Colony features will be available on-demand.", e);
+                }
             }
         }
     } else {

@@ -13,6 +13,30 @@ use super::common::send_response;
 use super::dispatcher::handle_request;
 use super::{TaskMap, ActiveKeysMap};
 
+/// Check if onboarding is needed by examining missing credentials and config
+fn check_if_onboarding_needed() -> bool {
+    use std::env;
+    use xdg::BaseDirectories;
+
+    // Check for missing private key
+    let missing_private_key = env::var("PRIVATE_KEY").is_err() || env::var("PRIVATE_KEY").unwrap_or_default().is_empty();
+
+    // Check for missing colony mnemonic
+    let missing_colony_mnemonic = env::var("COLONY_MNEMONIC").is_err() || env::var("COLONY_MNEMONIC").unwrap_or_default().is_empty();
+
+    // Check for missing config directory
+    let missing_config_dir = BaseDirectories::with_prefix("mutant")
+        .map(|xdg_dirs| !xdg_dirs.get_config_home().exists())
+        .unwrap_or(true);
+
+    let needs_onboarding = missing_private_key || missing_colony_mnemonic || missing_config_dir;
+
+    log::info!("WebSocket onboarding status check: needs_onboarding={}, missing_private_key={}, missing_colony_mnemonic={}, missing_config_dir={}",
+               needs_onboarding, missing_private_key, missing_colony_mnemonic, missing_config_dir);
+
+    needs_onboarding
+}
+
 pub async fn handle_ws(ws: WebSocket, mutant: Arc<MutAnt>, tasks: TaskMap, active_keys: ActiveKeysMap) {
     let (mut ws_sender, mut ws_receiver) = ws.split();
     let (update_tx, mut update_rx) = mpsc::unbounded_channel::<Response>();
@@ -210,7 +234,17 @@ async fn check_and_start_colony_initialization(mutant: Arc<MutAnt>, update_tx: m
         return;
     }
 
-    log::info!("Colony manager not initialized, starting initialization with progress tracking for WebSocket client");
+    log::info!("Colony manager not initialized, checking if onboarding is needed before starting initialization");
+
+    // Check if onboarding is needed before automatically initializing colony manager
+    let needs_onboarding = check_if_onboarding_needed();
+    if needs_onboarding {
+        log::info!("Onboarding required - skipping automatic colony manager initialization for WebSocket client");
+        log::info!("Colony manager will be initialized after user completes onboarding");
+        return;
+    }
+
+    log::info!("Onboarding completed - starting colony initialization with progress tracking for WebSocket client");
 
     // Get the stored initialization parameters
     let init_params = match super::colony::get_colony_init_params() {

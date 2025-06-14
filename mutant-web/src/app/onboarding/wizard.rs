@@ -192,12 +192,10 @@ impl OnboardingWizard {
         });
     }
 
-    fn draw_credential_collection(&self, ui: &mut egui::Ui, state: &OnboardingState) {
-        // Create local mutable copies for UI interaction
+    fn draw_credential_collection(&self, ui: &mut egui::Ui, state: &mut OnboardingState) {
+        // Work directly with state to ensure checkbox changes persist
         let mut local_private_key = state.private_key.clone();
         let mut local_colony_mnemonic = state.colony_mnemonic.clone();
-        let mut local_auto_generate_private_key = state.auto_generate_private_key;
-        let mut local_auto_generate_colony_mnemonic = state.auto_generate_colony_mnemonic;
 
         ui.vertical(|ui| {
             ui.label(
@@ -228,9 +226,9 @@ impl OnboardingWizard {
                     
                     ui.add_space(10.0);
                     
-                    ui.checkbox(&mut local_auto_generate_private_key, "Auto-generate a new private key");
+                    ui.checkbox(&mut state.auto_generate_private_key, "Auto-generate a new private key");
 
-                    if !local_auto_generate_private_key {
+                    if !state.auto_generate_private_key {
                         ui.add_space(5.0);
                         ui.label("Enter your private key (64 hex characters):");
                         ui.text_edit_singleline(&mut local_private_key);
@@ -253,9 +251,9 @@ impl OnboardingWizard {
                     
                     ui.add_space(10.0);
                     
-                    ui.checkbox(&mut local_auto_generate_colony_mnemonic, "Auto-generate a new colony mnemonic");
+                    ui.checkbox(&mut state.auto_generate_colony_mnemonic, "Auto-generate a new colony mnemonic");
 
-                    if !local_auto_generate_colony_mnemonic {
+                    if !state.auto_generate_colony_mnemonic {
                         ui.add_space(5.0);
                         ui.label("Enter your colony mnemonic (12 words):");
                         ui.text_edit_multiline(&mut local_colony_mnemonic);
@@ -276,11 +274,11 @@ impl OnboardingWizard {
                 let should_submit = ui.add(theme::primary_button("Continue")).clicked() && !state.is_loading;
 
                 if should_submit {
-                    // Use the local values that were modified by the UI
+                    // Use the state values that were modified by the UI
                     let private_key = local_private_key.clone();
                     let colony_mnemonic = local_colony_mnemonic.clone();
-                    let auto_generate_private_key = local_auto_generate_private_key;
-                    let auto_generate_colony_mnemonic = local_auto_generate_colony_mnemonic;
+                    let auto_generate_private_key = state.auto_generate_private_key;
+                    let auto_generate_colony_mnemonic = state.auto_generate_colony_mnemonic;
 
                     // Don't modify state here - do it in the async task to avoid deadlock
                     wasm_bindgen_futures::spawn_local(async move {

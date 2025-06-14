@@ -46,6 +46,13 @@ impl ColonyManager {
     /// The manager can operate in public-only mode for search operations.
     /// Returns None if no private key is provided and no COLONY_MNEMONIC is set.
     pub async fn new(wallet: Wallet, network_choice: NetworkChoice, private_key_hex: Option<String>) -> Result<Option<Self>, DaemonError> {
+        // Reload .env file to get the updated credentials
+        if let Err(e) = dotenvy::dotenv() {
+            log::debug!("No .env file found or failed to load during colony manager creation: {}", e);
+        } else {
+            log::info!("Reloaded environment variables from .env file for colony manager creation");
+        }
+
         // Check if we have a private key or colony mnemonic
         let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
 
@@ -123,6 +130,13 @@ impl ColonyManager {
         private_key_hex: Option<String>,
         update_tx: tokio::sync::mpsc::UnboundedSender<mutant_protocol::Response>
     ) -> Result<Option<Self>, DaemonError> {
+        // Reload .env file to get the updated credentials
+        if let Err(e) = dotenvy::dotenv() {
+            log::debug!("No .env file found or failed to load during colony manager creation with progress: {}", e);
+        } else {
+            log::info!("Reloaded environment variables from .env file for colony manager creation with progress");
+        }
+
         // Check if we have a private key or colony mnemonic
         let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
 

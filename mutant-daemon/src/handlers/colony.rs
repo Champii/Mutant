@@ -184,6 +184,13 @@ pub async fn ensure_colony_manager_with_progress(
         .ok_or_else(|| DaemonError::ColonyError("Colony initialization parameters not set".to_string()))?
         .clone();
 
+    // Reload .env file to get the updated credentials
+    if let Err(e) = dotenvy::dotenv() {
+        log::debug!("No .env file found or failed to load during colony manager initialization: {}", e);
+    } else {
+        log::info!("Reloaded environment variables from .env file for colony manager initialization");
+    }
+
     // Check if we have the necessary credentials
     let has_colony_mnemonic = std::env::var("COLONY_MNEMONIC").is_ok();
     if private_key_hex.is_none() && !has_colony_mnemonic {

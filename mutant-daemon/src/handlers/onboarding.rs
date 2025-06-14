@@ -184,6 +184,13 @@ pub(crate) async fn handle_initialize_colony(
         }
     };
 
+    // Reload .env file to get the updated credentials
+    if let Err(e) = dotenvy::dotenv() {
+        log::debug!("No .env file found or failed to load during colony initialization: {}", e);
+    } else {
+        log::info!("Reloaded environment variables from .env file for colony initialization");
+    }
+
     // Get private key from environment (should be set by set_credentials)
     let private_key = env::var("PRIVATE_KEY").ok();
 
