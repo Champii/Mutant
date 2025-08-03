@@ -479,6 +479,12 @@ pub fn is_colony_initializing() -> bool {
 /// Start colony initialization tracking
 pub fn start_colony_initialization(status: Option<String>) {
     if let Ok(mut state) = COLONY_INIT_STATE.try_write() {
+        // Prevent duplicate initialization calls
+        if state.is_initializing {
+            log::debug!("Colony initialization already in progress, ignoring duplicate start call");
+            return;
+        }
+
         state.is_initializing = true;
         state.progress = 0.0;
         state.status = status;
@@ -537,6 +543,7 @@ pub fn handle_daemon_colony_progress(event: mutant_protocol::ColonyEvent, operat
         // Initialization events
         ColonyEvent::InitializationStarted => {
             // When daemon starts colony initialization, ensure our state reflects this
+            // The start_colony_initialization function now prevents duplicates
             start_colony_initialization(Some("Daemon colony initialization started...".to_string()));
             (0.1, Some("Daemon colony initialization started...".to_string()), true, false)
         },

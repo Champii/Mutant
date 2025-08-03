@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use app::{context::init_context, fs_window::FsWindow, Window, DEFAULT_WS_URL};
 use futures::{channel::oneshot, StreamExt};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mutant_client::{MutantClient, ProgressReceiver};
 use mutant_protocol::{TaskProgress, TaskResult};
 use wasm_bindgen::prelude::*;
@@ -147,7 +147,7 @@ impl Client {
             info!("Connecting to daemon with retry logic");
             match this.connect(&DEFAULT_WS_URL()).await {
                 Ok(_) => {
-                    info!("Client connected successfully");
+                    info!("WebSocket client connected successfully");
                 }
                 Err(e) => {
                     error!("Failed to connect to daemon: {:?}", e);
@@ -486,7 +486,7 @@ impl Client {
                                                 initial_confirmed_count,
                                                 chunks_to_reserve
                                             } => {
-                                                log::info!("Progress update - Starting: total_chunks={}, initial_written={}, initial_confirmed={}, to_reserve={}",
+                                                debug!("Progress update - Starting: total_chunks={}, initial_written={}, initial_confirmed={}, to_reserve={}",
                                                     total_chunks, initial_written_count, initial_confirmed_count, chunks_to_reserve);
 
                                                 // Initialize the operation
@@ -500,7 +500,7 @@ impl Client {
 
                                                 // Log the initial state
                                                 if let Some(op) = progress_guard.operation.get("put") {
-                                                    log::info!("Progress initialized: total_pads={}, reserved={}, written={}, confirmed={}",
+                                                    debug!("Progress initialized: total_pads={}, reserved={}, written={}, confirmed={}",
                                                         op.total_pads, op.nb_reserved, op.nb_written, op.nb_confirmed);
                                                 }
                                             },
@@ -508,21 +508,21 @@ impl Client {
                                                 // Update reserved count
                                                 if let Some(op) = progress_guard.operation.get_mut("put") {
                                                     op.nb_reserved += 1;
-                                                    log::info!("Progress update - PadReserved: reserved={}/{}", op.nb_reserved, op.total_pads);
+                                                    debug!("Progress update - PadReserved: reserved={}/{}", op.nb_reserved, op.total_pads);
                                                 }
                                             },
                                             mutant_protocol::PutEvent::PadsWritten => {
                                                 // Update written count
                                                 if let Some(op) = progress_guard.operation.get_mut("put") {
                                                     op.nb_written += 1;
-                                                    log::info!("Progress update - PadsWritten: written={}/{}", op.nb_written, op.total_pads);
+                                                    debug!("Progress update - PadsWritten: written={}/{}", op.nb_written, op.total_pads);
                                                 }
                                             },
                                             mutant_protocol::PutEvent::PadsConfirmed => {
                                                 // Update confirmed count
                                                 if let Some(op) = progress_guard.operation.get_mut("put") {
                                                     op.nb_confirmed += 1;
-                                                    log::info!("Progress update - PadsConfirmed: confirmed={}/{}", op.nb_confirmed, op.total_pads);
+                                                    debug!("Progress update - PadsConfirmed: confirmed={}/{}", op.nb_confirmed, op.total_pads);
                                                 }
                                             },
 
@@ -532,7 +532,7 @@ impl Client {
                                                     op.nb_reserved = op.total_pads;
                                                     op.nb_written = op.total_pads;
                                                     op.nb_confirmed = op.total_pads;
-                                                    log::info!("Progress update - Complete: All {} pads reserved, written, and confirmed", op.total_pads);
+                                                    info!("Upload completed: All {} pads uploaded successfully", op.total_pads);
                                                 }
                                             }
                                         }
@@ -1227,20 +1227,20 @@ impl MyApp {
                 // Fetch wallet balance
                 match ctx_clone.get_wallet_balance().await {
                     Some(balance) => {
-                        log::info!("Wallet balance fetched successfully: tokens={}, gas={}", balance.token_balance, balance.gas_balance);
+                        info!("Wallet balance: {} tokens, {} gas", balance.token_balance, balance.gas_balance);
                     }
                     None => {
-                        log::warn!("Failed to fetch wallet balance");
+                        warn!("Failed to fetch wallet balance");
                     }
                 }
 
                 // Fetch daemon status
                 match ctx_clone.get_daemon_status().await {
                     Some(status) => {
-                        log::info!("Daemon status fetched successfully: public_key={:?}, is_public_only={}", status.public_key, status.is_public_only);
+                        info!("Daemon status: public_only={}, public_key={:?}", status.is_public_only, status.public_key.map(|k| format!("{}...", &k[..8])));
                     }
                     None => {
-                        log::warn!("Failed to fetch daemon status");
+                        warn!("Failed to fetch daemon status");
                     }
                 }
             });
@@ -1535,24 +1535,17 @@ impl eframe::App for MyApp {
         // Check if onboarding is active and show the wizard
         // Add a small delay to ensure rendering system is stable
         if self.frame_counter < 5 {
-            log::debug!("Frame {}: Skipping onboarding check (waiting for rendering to stabilize)", self.frame_counter);
             return;
         }
 
-        log::debug!("Frame {}: About to check if onboarding is active...", self.frame_counter);
         let onboarding_active = app::onboarding::is_onboarding_active();
-        log::debug!("Frame {}: Onboarding active check completed: {}", self.frame_counter, onboarding_active);
 
         if onboarding_active {
-            log::debug!("Frame {}: About to call onboarding_wizard.show(ctx)...", self.frame_counter);
             let wizard_result = self.onboarding_wizard.show(ctx);
-            log::debug!("Frame {}: onboarding_wizard.show(ctx) returned: {}", self.frame_counter, wizard_result);
             if wizard_result {
                 // Onboarding is still active, don't show the main interface
-                log::debug!("Frame {}: Onboarding wizard shown, skipping main interface", self.frame_counter);
                 return;
             }
-            log::debug!("Frame {}: Onboarding wizard.show() completed, continuing to main interface", self.frame_counter);
         }
 
         // Check if colony initialization is active and show the modal (even if onboarding is complete)
@@ -1560,17 +1553,11 @@ impl eframe::App for MyApp {
         let _modal_result = self.colony_init_modal.show(ctx);
         // Note: We don't return here - the colony modal should overlay the main interface
 
-        log::debug!("Starting main UI rendering...");
-
         // Show the header
-        log::debug!("Drawing header...");
         self.draw_header(ctx);
-        log::debug!("Header drawn successfully");
 
         // Show the left menu
-        log::debug!("Drawing left menu...");
         self.draw_left_menu(ctx);
-        log::debug!("Left menu drawn successfully");
 
         // Draw the toggle button as a floating circular button that overlaps with the main content
         let sidebar_width = if self.sidebar_expanded { 200.0 } else { 60.0 };
@@ -1599,27 +1586,19 @@ impl eframe::App for MyApp {
             });
 
         // Show the main FS window in the remaining space
-        log::debug!("Drawing central panel and FS window...");
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(app::theme::MutantColors::BACKGROUND_DARK))
             .show(ctx, |ui| {
                 // Render the static FS window directly
                 // All windows now dock within the FS window's internal dock system
-                log::debug!("About to draw FS window...");
                 self.fs_window.write().unwrap().draw(ui);
-                log::debug!("FS window drawn successfully");
             });
-        log::debug!("Central panel drawn successfully");
 
         // Show notifications
-        log::debug!("Showing notifications...");
         app::notifications::show_notifications(ctx);
-        log::debug!("Notifications shown successfully");
 
         // Update video player z-index based on which tabs are currently visible
-        log::debug!("Updating video player z-index...");
         app::fs::viewer_tab::update_video_player_z_index();
-        log::debug!("Video player z-index updated successfully");
     }
 }
 

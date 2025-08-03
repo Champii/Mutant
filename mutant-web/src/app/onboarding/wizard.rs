@@ -343,8 +343,15 @@ impl OnboardingWizard {
     }
 
     fn draw_colony_initialization(&self, ui: &mut egui::Ui, state: &mut OnboardingState) {
+        // Check if colony initialization is already in progress from daemon events
+        let daemon_colony_in_progress = crate::app::colony_window::is_colony_operation_in_progress();
+
         // Check if we need to start initialization before drawing UI
-        let should_start_initialization = !state.is_loading && !state.colony_initialization_started && state.colony_initialization_progress == 0.0;
+        // Only start if daemon isn't already handling it and we haven't started yet
+        let should_start_initialization = !state.is_loading
+            && !state.colony_initialization_started
+            && state.colony_initialization_progress == 0.0
+            && !daemon_colony_in_progress;
 
         // Store the flag to defer the async task spawning until after UI rendering
         let mut spawn_initialization = false;
@@ -353,7 +360,11 @@ impl OnboardingWizard {
             // Set flag immediately to prevent multiple spawns
             state.colony_initialization_started = true;
             spawn_initialization = true;
-            log::info!("Marking colony initialization to start after UI rendering");
+            log::info!("Marking colony initialization to start after UI rendering (daemon not active)");
+        } else if daemon_colony_in_progress && !state.colony_initialization_started {
+            // If daemon is handling colony initialization, mark our state as started to show progress
+            state.colony_initialization_started = true;
+            log::info!("Daemon colony initialization detected, syncing onboarding state");
         }
 
         ui.vertical_centered(|ui| {
@@ -431,8 +442,13 @@ impl OnboardingWizard {
         if spawn_initialization {
             log::info!("Starting colony initialization auto-start");
 
-            // Start global colony initialization tracking
-            super::start_colony_initialization(Some("Starting colony initialization...".to_string()));
+            // Only start global colony initialization tracking if daemon isn't already handling it
+            // This prevents duplicate initialization calls that cause database locks
+            if !crate::app::colony_window::is_colony_operation_in_progress() {
+                super::start_colony_initialization(Some("Starting colony initialization...".to_string()));
+            } else {
+                log::info!("Daemon colony initialization already in progress, skipping duplicate start call");
+            }
 
             wasm_bindgen_futures::spawn_local(async move {
                 log::info!("Colony initialization async task started");
@@ -453,7 +469,10 @@ impl OnboardingWizard {
                 match initialization_result {
                     Ok(_) => {
                         log::info!("Colony initialization completed successfully");
-                        super::complete_colony_initialization();
+                        // Only call complete if we're not already completed by daemon events
+                        if !crate::app::colony_window::is_colony_operation_in_progress() {
+                            super::complete_colony_initialization();
+                        }
                     }
                     Err(e) => {
                         log::error!("Colony initialization failed: {}", e);

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use futures::{channel::oneshot, StreamExt};
 use lazy_static::lazy_static;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mutant_client::MutantClient;
 use mutant_protocol::{KeyDetails, StatsResponse, Task, TaskId, TaskListEntry, TaskProgress, SearchResponse, AddContactResponse, ListContentResponse, SyncContactsResponse, GetUserContactResponse, ListContactsResponse};
 use tokio::sync::mpsc;
@@ -96,7 +96,7 @@ async fn ensure_connected(client: &mut MutantClient, connected: &mut bool) -> Re
     // Use the new retry logic with 3 attempts and exponential backoff
     match client.connect_with_retry(&ws_url, 3, 500).await {
         Ok(_) => {
-            info!("Successfully connected to daemon");
+            info!("Successfully connected to daemon at {}", ws_url);
             *connected = true;
             Ok(())
         }
@@ -174,13 +174,33 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
         // Set up the colony progress callback with error handling
         log::info!("CLIENT MANAGER: Setting up colony progress callback...");
         mutant_client::set_colony_progress_callback(|event, operation_id| {
-            log::info!("CLIENT MANAGER: Received colony progress event via callback: {:?}", event);
+            // Only log important colony events at info level, others at debug
+            use mutant_protocol::ColonyEvent;
+            match &event {
+                ColonyEvent::InitializationStarted => {
+                    log::info!("CLIENT MANAGER: Colony initialization started");
+                }
+                ColonyEvent::InitializationCompleted => {
+                    log::info!("CLIENT MANAGER: Colony initialization completed");
+                }
+                ColonyEvent::DataStoreInitStarted => {
+                    log::info!("CLIENT MANAGER: Data store initialization started");
+                }
+                ColonyEvent::KeyStoreInitStarted => {
+                    log::info!("CLIENT MANAGER: Key store initialization started");
+                }
+                ColonyEvent::GraphInitStarted => {
+                    log::info!("CLIENT MANAGER: Graph initialization started");
+                }
+                _ => {
+                    log::debug!("CLIENT MANAGER: Colony progress event: {:?}", event);
+                }
+            }
 
             // Add the event to colony_window for processing - this is the main system
             crate::app::colony_window::add_colony_progress_event(event.clone(), operation_id.clone());
 
             // Also trigger colony initialization state when we receive initialization events
-            use mutant_protocol::ColonyEvent;
             match &event {
                 ColonyEvent::InitializationStarted |
                 ColonyEvent::DataStoreInitStarted |
@@ -191,20 +211,13 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
                 ColonyEvent::UserPodCreationStarted => {
                     // Start colony initialization tracking
                     crate::app::onboarding::start_colony_initialization(Some("Colony initialization in progress...".to_string()));
-                    log::info!("CLIENT MANAGER: Started colony initialization tracking for event: {:?}", event);
                 }
                 ColonyEvent::InitializationCompleted => {
                     // Complete colony initialization tracking
                     crate::app::onboarding::complete_colony_initialization();
-                    log::info!("CLIENT MANAGER: Completed colony initialization tracking");
                 }
-                _ => {
-                    // For other events, just log them
-                    log::debug!("CLIENT MANAGER: Processed colony event: {:?}", event);
-                }
+                _ => {}
             }
-
-            log::info!("CLIENT MANAGER: Colony progress event processed successfully");
         });
         log::info!("CLIENT MANAGER: Colony progress callback setup completed");
 
@@ -264,11 +277,11 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
                     }
                 }
                 ClientCommand::ListTasks(sender) => {
-                    info!("Processing ListTasks command");
+                    debug!("Processing ListTasks command");
 
                     // Ensure we're connected
                     if let Err(e) = ensure_connected(&mut client, &mut connected).await {
-                        info!("Connection failed for ListTasks: {}", e);
+                        debug!("Connection failed for ListTasks: {}", e);
                         // Only send if the receiver is still interested
                         if !sender.is_canceled() {
                             let _ = sender.send(Err(e));
@@ -276,7 +289,7 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
                         continue;
                     }
 
-                    info!("Connection established, sending list_tasks request");
+                    debug!("Connection established, sending list_tasks request");
 
                     // Execute the command with proper error handling
                     let result = match client.list_tasks().await {
@@ -298,7 +311,7 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
 
                     // Only send if the receiver is still interested
                     if !sender.is_canceled() {
-                        info!("Sending list_tasks response to caller");
+                        debug!("Sending list_tasks response to caller");
 
                         // Create a safe copy of the result to avoid memory issues
                         let safe_result = match &result {
@@ -315,11 +328,11 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
 
                         // Send the safe result
                         match sender.send(safe_result) {
-                            Ok(_) => info!("Successfully sent list_tasks response to caller"),
+                            Ok(_) => debug!("Successfully sent list_tasks response to caller"),
                             Err(e) => error!("Failed to send list_tasks response: {:?}", e)
                         }
                     } else {
-                        info!("Receiver canceled, not sending list_tasks response");
+                        debug!("Receiver canceled, not sending list_tasks response");
                     }
                 }
                 ClientCommand::GetStats(sender) => {
@@ -472,7 +485,7 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
                         // Clone the data once before using it
                         let data_clone = data.clone();
 
-                        info!("Uploading file: {} bytes", data_clone.len());
+                        info!("Starting upload: {} bytes", data_clone.len());
                         // Use standard upload
                         let result = put_client.put_bytes(
                             &key,
@@ -1038,7 +1051,7 @@ fn spawn_client_manager(mut rx: futures::channel::mpsc::UnboundedReceiver<Client
 
 // Public API to send commands to the client manager
 pub async fn list_keys() -> Result<Vec<KeyDetails>, String> {
-    info!("Starting list_keys request");
+    debug!("Starting list_keys request");
 
     // Create a oneshot channel for the response
     let (tx, rx) = oneshot::channel();
@@ -1046,12 +1059,12 @@ pub async fn list_keys() -> Result<Vec<KeyDetails>, String> {
     // Send the command to the client manager
     match CLIENT_COMMAND_SENDER.unbounded_send(ClientCommand::ListKeys(tx)) {
         Ok(_) => {
-            info!("ListKeys command sent to client manager");
+            debug!("ListKeys command sent to client manager");
 
             // Wait for the response
             match rx.await {
                 Ok(result) => {
-                    info!("Received list_keys response from client manager");
+                    debug!("Received list_keys response from client manager");
                     result
                 },
                 Err(e) => {
@@ -1068,14 +1081,14 @@ pub async fn list_keys() -> Result<Vec<KeyDetails>, String> {
 }
 
 pub async fn start_get_stream(name: &str, is_public: bool) -> Result<(TaskId, mpsc::UnboundedReceiver<Result<TaskProgress, String>>, mpsc::UnboundedReceiver<Result<Vec<u8>, String>>), String> {
-    info!("Starting StartGetStream request for key {}", name);
+    debug!("Starting StartGetStream request for key {}", name);
     let (tx, rx) = oneshot::channel();
     match CLIENT_COMMAND_SENDER.unbounded_send(ClientCommand::StartGetStream(name.to_string(), is_public, tx)) {
         Ok(_) => {
-            info!("StartGetStream command sent to client manager");
+            debug!("StartGetStream command sent to client manager");
             match rx.await {
                 Ok(result) => {
-                    info!("Received StartGetStream response from client manager");
+                    debug!("Received StartGetStream response from client manager");
                     result
                 }
                 Err(e) => {
@@ -1092,7 +1105,7 @@ pub async fn start_get_stream(name: &str, is_public: bool) -> Result<(TaskId, mp
 }
 
 pub async fn list_tasks() -> Result<Vec<TaskListEntry>, String> {
-    info!("Starting list_tasks request");
+    debug!("Starting list_tasks request");
 
     // Create a oneshot channel for the response
     let (tx, rx) = oneshot::channel();
@@ -1100,12 +1113,12 @@ pub async fn list_tasks() -> Result<Vec<TaskListEntry>, String> {
     // Send the command to the client manager
     match CLIENT_COMMAND_SENDER.unbounded_send(ClientCommand::ListTasks(tx)) {
         Ok(_) => {
-            info!("ListTasks command sent to client manager");
+            debug!("ListTasks command sent to client manager");
 
             // Wait for the response
             match rx.await {
                 Ok(result) => {
-                    info!("Received list_tasks response from client manager");
+                    debug!("Received list_tasks response from client manager");
                     result
                 },
                 Err(e) => {

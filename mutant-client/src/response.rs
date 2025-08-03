@@ -1,4 +1,4 @@
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, trace, warn};
 use mutant_protocol::{
     ErrorResponse, ExportResponse, ImportResponse, ListKeysResponse, MvSuccessResponse, Response,
     RmSuccessResponse, Task, TaskCreatedResponse, TaskListResponse, TaskProgress,
@@ -533,7 +533,7 @@ impl MutantClient {
             // Other colony responses that don't have direct client methods yet
             Response::StreamingPad(streaming_pad_response) => {
                 let task_id = streaming_pad_response.task_id;
-                info!("CLIENT: Received streaming pad for task {} (pad {}/{})",
+                debug!("CLIENT: Received streaming pad for task {} (pad {}/{})",
                       task_id,
                       streaming_pad_response.pad_index + 1,
                       streaming_pad_response.total_pads);
@@ -560,9 +560,9 @@ impl MutantClient {
                 #[cfg(target_arch = "wasm32")]
                 {
                     if let Some(callback) = COLONY_PROGRESS_CALLBACK.get() {
-                        info!("CLIENT: Calling colony progress callback for event: {:?}", progress_response.event);
+                        debug!("CLIENT: Calling colony progress callback for event: {:?}", progress_response.event);
                         callback(progress_response.event, progress_response.operation_id);
-                        info!("CLIENT: Colony progress callback completed");
+                        debug!("CLIENT: Colony progress callback completed");
                     } else {
                         warn!("CLIENT: Colony progress callback not set! Event will be ignored: {:?}", progress_response.event);
                     }
@@ -673,24 +673,24 @@ impl MutantClient {
             // Use a loop to handle non-text messages without recursion
             loop {
                 // Use the async next() method from nash-ws to wait for the next message
-                info!("CLIENT: Waiting for next WebSocket message...");
+                trace!("CLIENT: Waiting for next WebSocket message...");
                 match receiver.next().await {
                     Some(Ok(message)) => {
                         // Process the message
-                        info!("CLIENT: Processing WebSocket message type: {:?}", std::mem::discriminant(&message));
+                        trace!("CLIENT: Processing WebSocket message type: {:?}", std::mem::discriminant(&message));
                         match message {
                             nash_ws::Message::Text(text) => {
-                                info!("CLIENT: Received text message: {}", text);
+                                trace!("CLIENT: Received text message: {}", text);
                                 match serde_json::from_str::<Response>(&text) {
                                     Ok(response) => {
-                                        info!("CLIENT: Successfully deserialized response: {:?}", response);
+                                        trace!("CLIENT: Successfully deserialized response: {:?}", response);
                                         Self::process_response(
                                             response.clone(),
                                             &self.tasks,
                                             &self.task_channels,
                                             &self.pending_requests,
                                         );
-                                        info!("CLIENT: Response processed successfully");
+                                        trace!("CLIENT: Response processed successfully");
                                         return Some(Ok(response));
                                     }
                                     Err(e) => {
